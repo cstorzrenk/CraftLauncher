@@ -1,0 +1,12 @@
+# Entpackte Arbeitsordner und kompilierte Binaries
+workspace/
+
+# Heruntergeladene Tool-ZIP-Archive (können über den Launcher von GitHub geladen/aktualisiert werden)
+*.zip
+.tmp_*.zip
+
+# Lokaler Versions-Cache & Python-Cache
+.tool_versions.json
+__pycache__/
+*.py[cod]
+*$py.class

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e1e2e"/>
+      <stop offset="100%" stop-color="#11111b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#89b4fa"/>
+      <stop offset="50%" stop-color="#cba6f7"/>
+      <stop offset="100%" stop-color="#f38ba8"/>
+    </linearGradient>
+  </defs>
+  <!-- Background Card -->
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)" stroke="#313244" stroke-width="3"/>
+  <!-- App Icon Grid / Rocket Emblem -->
+  <circle cx="64" cy="64" r="38" fill="url(#accent)" opacity="0.15"/>
+  <path d="M64 26 C78 26 88 40 88 56 C88 74 74 88 64 98 C54 88 40 74 40 56 C40 40 50 26 64 26 Z" fill="url(#accent)"/>
+  <!-- Inner Star / Flame -->
+  <circle cx="64" cy="56" r="10" fill="#181825"/>
+  <path d="M64 50 L66 54 L70 56 L66 58 L64 62 L62 58 L58 56 L62 54 Z" fill="#89b4fa"/>
+</svg>
+
