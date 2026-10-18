@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
-Craft Launcher - Schnellauswahl & Starter für Kreativ- und Office-Tools
+Craft Launcher - Schnellauswahl, Auto-Installer & Prozess-Manager für Kreativ- und Office-Tools
+Beinhaltet:
+- Original-App-Icons (aus icons/*.png)
+- Vollautomatische 1-Klick-Bereitstellung (GitHub-Download -> Entpacken -> Kompilieren -> Direktstart)
+- Option 1: Speicherplatz-Turbo (bereinigt Rust-Compiler-Zwischendateien deps/build/incremental, spart ~28 GB)
+- Option 4: Favoriten (⭐), "Zuletzt verwendet"-Sortierung & Umschalter Liste (☰) <-> Kachel-Grid (⊞)
+- Option 5: Neues Tool direkt per GitHub-URL hinzufügen (inkl. Auto-Erkennung & Icon-Download)
+- Option 6: Live-Prozess-Überwachung ("🟢 Aktiv"-Badge + 1-Klick "⏹️ Stopp"-Button)
 """
 
 import os
+import re
 import sys
+import time
 import json
+import signal
 import zipfile
 import threading
 import subprocess
@@ -23,9 +33,9 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "tools_config.json"
 VERSIONS_PATH = BASE_DIR / ".tool_versions.json"
+ICONS_DIR = BASE_DIR / "icons"
 DEFAULT_WORKSPACE_DIR = BASE_DIR / "workspace"
 
-# Cargo / Rust & Local bin Verzeichnisse zu PATH hinzufügen
 for extra_bin in [Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"]:
     if extra_bin.exists() and str(extra_bin) not in os.environ.get("PATH", ""):
         os.environ["PATH"] = f"{extra_bin}:{os.environ.get('PATH', '')}"
@@ -105,25 +115,38 @@ headerbar .subtitle {
     background-color: #181825;
     border: 1px solid #313244;
     border-radius: 12px;
-    padding: 14px;
-    margin: 6px 12px;
+    padding: 12px 14px;
+    margin: 5px 10px;
     transition: all 150ms ease;
 }
 
-.tool-card:hover {
+.tool-card-grid {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 12px;
+    padding: 12px;
+    margin: 4px;
+    transition: all 150ms ease;
+}
+
+.tool-card:hover, .tool-card-grid:hover {
     border-color: #89b4fa;
     background-color: #1e1e2e;
 }
 
+.tool-card-running {
+    border-color: #a6e3a1;
+}
+
 .icon-badge {
     border-radius: 12px;
-    min-width: 52px;
-    min-height: 52px;
+    min-width: 48px;
+    min-height: 48px;
     font-size: 26px;
 }
 
 .tool-title {
-    font-size: 16px;
+    font-size: 15px;
     font-weight: bold;
     color: #cdd6f4;
 }
@@ -140,12 +163,22 @@ headerbar .subtitle {
 .tool-desc {
     font-size: 12px;
     color: #a6adc8;
-    margin-top: 4px;
+    margin-top: 3px;
 }
 
 .badge-status-ready {
     background-color: rgba(166, 227, 161, 0.15);
     color: #a6e3a1;
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.badge-status-running {
+    background-color: rgba(166, 227, 161, 0.28);
+    color: #a6e3a1;
+    border: 1px solid rgba(166, 227, 161, 0.5);
     border-radius: 10px;
     padding: 2px 8px;
     font-size: 10px;
@@ -175,7 +208,7 @@ headerbar .subtitle {
     color: #11111b;
     border-radius: 8px;
     font-weight: bold;
-    padding: 6px 16px;
+    padding: 5px 14px;
     border: none;
 }
 
@@ -183,12 +216,25 @@ headerbar .subtitle {
     background-color: #b4befe;
 }
 
+.btn-stop {
+    background-color: #f38ba8;
+    color: #11111b;
+    border-radius: 8px;
+    font-weight: bold;
+    padding: 5px 12px;
+    border: none;
+}
+
+.btn-stop:hover {
+    background-color: #eba0ac;
+}
+
 .btn-update {
     background-color: #fab387;
     color: #11111b;
     border-radius: 8px;
     font-weight: bold;
-    padding: 6px 12px;
+    padding: 5px 12px;
     border: none;
 }
 
@@ -200,17 +246,32 @@ headerbar .subtitle {
     background-color: #313244;
     color: #cdd6f4;
     border-radius: 8px;
-    padding: 6px 10px;
+    padding: 5px 9px;
     border: none;
 }
 
 .btn-secondary:hover {
     background-color: #45475a;
 }
+
+.btn-star {
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    font-size: 15px;
+    box-shadow: none;
+}
+
+.btn-star:hover {
+    background-color: #313244;
+    border-radius: 6px;
+}
 """
+
 
 def check_command_available(cmd_name):
     return shutil.which(cmd_name) is not None
+
 
 def load_config():
     if CONFIG_PATH.exists():
@@ -219,7 +280,8 @@ def load_config():
                 return json.load(f)
         except Exception as e:
             print(f"Fehler beim Laden von {CONFIG_PATH}: {e}", file=sys.stderr)
-    return {"workspace_dir": "workspace", "tools": []}
+    return {"workspace_dir": "workspace", "view_mode": "list", "tools": []}
+
 
 def save_config(cfg):
     try:
@@ -227,6 +289,7 @@ def save_config(cfg):
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"Fehler beim Speichern von {CONFIG_PATH}: {e}", file=sys.stderr)
+
 
 def load_versions():
     if VERSIONS_PATH.exists():
@@ -237,6 +300,7 @@ def load_versions():
             pass
     return {}
 
+
 def save_versions(ver):
     try:
         with open(VERSIONS_PATH, "w", encoding="utf-8") as f:
@@ -244,113 +308,242 @@ def save_versions(ver):
     except Exception as e:
         print(f"Fehler beim Speichern der Versionen: {e}", file=sys.stderr)
 
+
+def clean_rust_target_cache(extracted_path: Path, bin_path: Path) -> int:
+    """
+    Option 1 (Speicherplatz-Turbo):
+    Löscht temporäre Compiler-Artefakte (deps, build, .fingerprint, incremental, .rlib, .d)
+    im Ordner target/, behält aber die ausführbare Release-Binärdatei!
+    Gibt die eingesparten Bytes zurück.
+    """
+    if not bin_path.exists():
+        return 0
+
+    target_dir = extracted_path / "target"
+    if not target_dir.exists():
+        return 0
+
+    freed_bytes = 0
+
+    def dir_size(p: Path) -> int:
+        total = 0
+        for root, _dirs, files in os.walk(p):
+            for f in files:
+                fp = Path(root) / f
+                if not fp.is_symlink():
+                    try:
+                        total += fp.stat().st_size
+                    except OSError:
+                        pass
+        return total
+
+    # Lösche debug/ komplett, falls vorhanden
+    debug_dir = target_dir / "debug"
+    if debug_dir.exists():
+        freed_bytes += dir_size(debug_dir)
+        shutil.rmtree(debug_dir, ignore_errors=True)
+
+    # Lösche schwere Unterordner in target/release/
+    rel_dir = target_dir / "release"
+    if rel_dir.exists():
+        for sub in ["deps", "build", ".fingerprint", "incremental", "examples"]:
+            sp = rel_dir / sub
+            if sp.exists():
+                freed_bytes += dir_size(sp)
+                shutil.rmtree(sp, ignore_errors=True)
+        for item in rel_dir.iterdir():
+            if item.is_file() and item != bin_path and item.suffix in (".d", ".rlib"):
+                try:
+                    freed_bytes += item.stat().st_size
+                    item.unlink()
+                except OSError:
+                    pass
+
+    return freed_bytes
+
+
+def get_directory_size_gb(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    try:
+        out = subprocess.check_output(["du", "-sb", str(path)], stderr=subprocess.DEVNULL).decode()
+        b = int(out.split()[0])
+        return b / (1024 ** 3)
+    except Exception:
+        return 0.0
+
+
 class ToolCard(Gtk.Box):
-    def __init__(self, tool_data, app_window):
-        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+    def __init__(self, tool_data, app_window, compact=False):
+        super().__init__(
+            orientation=Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL,
+            spacing=8 if compact else 14
+        )
         self.tool = tool_data
         self.app = app_window
-        self.get_style_context().add_class("tool-card")
+        self.compact = compact
+        self.get_style_context().add_class("tool-card-grid" if compact else "tool-card")
 
         self.workspace_dir = BASE_DIR / self.app.config.get("workspace_dir", "workspace")
         self.extracted_path = self.workspace_dir / self.tool.get("extracted_dir", self.tool.get("id"))
 
-        # Icon / Badge Box (Original-Logo bevorzugt, Emoji als Fallback)
-        icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        icon_box.set_valign(Gtk.Align.CENTER)
-        icon_box.get_style_context().add_class("icon-badge")
-
+        # Icon Widget (Original-Logo bevorzugt, Emoji als Fallback)
+        icon_size = 42 if compact else 48
         icon_widget = None
         rel_icon = self.tool.get("icon_path") or f"icons/{self.tool.get('id', '')}.png"
         icon_file = BASE_DIR / rel_icon
         if icon_file.exists():
             try:
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_file), 48, 48, True)
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_file), icon_size, icon_size, True)
                 icon_widget = Gtk.Image.new_from_pixbuf(pixbuf)
-            except Exception as e:
-                print(f"Konnte Icon {icon_file} nicht laden: {e}", file=sys.stderr)
-
+            except Exception:
+                pass
         if icon_widget is None:
-            icon_label = Gtk.Label(label=self.tool.get("icon", "📦"))
-            icon_label.set_use_markup(True)
-            icon_label.set_markup(f"<span font='28'>{self.tool.get('icon', '📦')}</span>")
+            icon_label = Gtk.Label()
+            icon_label.set_markup(f"<span font='24'>{self.tool.get('icon', '📦')}</span>")
             icon_widget = icon_label
 
-        icon_box.pack_start(icon_widget, True, True, 0)
-        self.pack_start(icon_box, False, False, 4)
+        # Favorite Star Button (Option 4)
+        self.star_btn = Gtk.Button()
+        self.star_btn.get_style_context().add_class("btn-star")
+        self.star_btn.set_tooltip_text("Als Favorit oben anheften / lösen")
+        self.update_star_label()
+        self.star_btn.connect("clicked", self.on_toggle_favorite)
 
-        # Middle Content Box
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        content_box.set_hexpand(True)
-        content_box.set_valign(Gtk.Align.CENTER)
-
-        # Header Line (Title, Subtitle, Status)
-        header_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        
+        # Title, Subtitle, Badges
         title_label = Gtk.Label()
         title_label.set_markup(f"<b>{GLib.markup_escape_text(self.tool.get('name', 'Unbekannt'))}</b>")
         title_label.get_style_context().add_class("tool-title")
         title_label.set_xalign(0)
-        header_line.pack_start(title_label, False, False, 0)
 
-        if self.tool.get("subtitle"):
-            sub_label = Gtk.Label(label=self.tool.get("subtitle"))
-            sub_label.get_style_context().add_class("tool-subtitle")
-            header_line.pack_start(sub_label, False, False, 0)
-
-        # Status badge
         self.status_label = Gtk.Label()
-        header_line.pack_start(self.status_label, False, False, 0)
 
-        # Update badge (shown when update available)
+        # Live Running Badge (Option 6)
+        self.running_badge = Gtk.Label(label="🟢 Aktiv")
+        self.running_badge.get_style_context().add_class("badge-status-running")
+        self.running_badge.set_no_show_all(True)
+
+        # Update Badge
         self.update_badge = Gtk.Label()
         self.update_badge.get_style_context().add_class("badge-update")
         self.update_badge.set_no_show_all(True)
-        header_line.pack_start(self.update_badge, False, False, 0)
 
-        content_box.pack_start(header_line, False, False, 0)
-
-        # Description
-        desc_label = Gtk.Label(label=self.tool.get("description", ""))
-        desc_label.get_style_context().add_class("tool-desc")
-        desc_label.set_line_wrap(True)
-        desc_label.set_xalign(0)
-        content_box.pack_start(desc_label, False, False, 0)
-
-        self.pack_start(content_box, True, True, 0)
-
-        # Actions Box
-        actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        actions_box.set_valign(Gtk.Align.CENTER)
-
-        # Update Button (hidden until update found)
-        self.update_btn = Gtk.Button(label="⬆️ Update")
+        # Buttons
+        self.update_btn = Gtk.Button(label="⬆️")
         self.update_btn.get_style_context().add_class("btn-update")
-        self.update_btn.set_tooltip_text("Neueste Version von GitHub herunterladen & neu kompilieren")
+        self.update_btn.set_tooltip_text("Update von GitHub laden & bauen")
         self.update_btn.set_no_show_all(True)
         self.update_btn.connect("clicked", lambda b: self.perform_update(launch_after=False))
-        actions_box.pack_start(self.update_btn, False, False, 0)
 
-        # Start Button
+        # Stop Button (Option 6 - hidden unless running)
+        self.stop_btn = Gtk.Button(label="⏹️ Stopp")
+        self.stop_btn.get_style_context().add_class("btn-stop")
+        self.stop_btn.set_tooltip_text("Laufenden Prozess beenden")
+        self.stop_btn.set_no_show_all(True)
+        self.stop_btn.connect("clicked", self.on_stop_clicked)
+
         self.start_btn = Gtk.Button(label="🚀 Starten")
         self.start_btn.get_style_context().add_class("btn-primary")
         self.start_btn.connect("clicked", self.on_start_clicked)
-        actions_box.pack_start(self.start_btn, False, False, 0)
 
-        # Terminal Button
-        self.term_btn = Gtk.Button(label="📟 Terminal")
+        self.term_btn = Gtk.Button(label="📟" if compact else "📟 Terminal")
         self.term_btn.get_style_context().add_class("btn-secondary")
-        self.term_btn.set_tooltip_text("Im Terminal starten (für Logs & Konsolen-Ausgaben)")
+        self.term_btn.set_tooltip_text("Im Terminal starten")
         self.term_btn.connect("clicked", lambda b: self.on_start_clicked(b, in_terminal=True))
-        actions_box.pack_start(self.term_btn, False, False, 0)
 
-        # More Actions Menu
+        more_btn = self._build_more_menu_button()
+
+        if compact:
+            # --- KOMPAKTE KACHEL-ANSICHT (Grid Mode) ---
+            self.set_size_request(280, -1)
+            top_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            top_row.pack_start(icon_widget, False, False, 0)
+
+            title_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            title_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            title_line.pack_start(title_label, False, False, 0)
+            title_line.pack_end(self.star_btn, False, False, 0)
+            title_col.pack_start(title_line, False, False, 0)
+
+            if self.tool.get("subtitle"):
+                sub_label = Gtk.Label(label=self.tool.get("subtitle"))
+                sub_label.get_style_context().add_class("tool-subtitle")
+                sub_label.set_xalign(0)
+                sub_label.set_ellipsize(Pango.EllipsizeMode.END)
+                title_col.pack_start(sub_label, False, False, 0)
+
+            top_row.pack_start(title_col, True, True, 0)
+            self.pack_start(top_row, False, False, 0)
+
+            badge_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            badge_row.pack_start(self.status_label, False, False, 0)
+            badge_row.pack_start(self.running_badge, False, False, 0)
+            badge_row.pack_start(self.update_badge, False, False, 0)
+            self.pack_start(badge_row, False, False, 0)
+
+            act_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+            act_row.pack_start(self.start_btn, True, True, 0)
+            act_row.pack_start(self.stop_btn, False, False, 0)
+            act_row.pack_start(self.update_btn, False, False, 0)
+            act_row.pack_start(self.term_btn, False, False, 0)
+            act_row.pack_start(more_btn, False, False, 0)
+            self.pack_start(act_row, False, False, 0)
+        else:
+            # --- DETAIL-LISTEN-ANSICHT ---
+            icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            icon_box.set_valign(Gtk.Align.CENTER)
+            icon_box.get_style_context().add_class("icon-badge")
+            icon_box.pack_start(icon_widget, True, True, 0)
+            self.pack_start(icon_box, False, False, 2)
+
+            content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            content_box.set_hexpand(True)
+            content_box.set_valign(Gtk.Align.CENTER)
+
+            header_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            header_line.pack_start(self.star_btn, False, False, 0)
+            header_line.pack_start(title_label, False, False, 0)
+
+            if self.tool.get("subtitle"):
+                sub_label = Gtk.Label(label=self.tool.get("subtitle"))
+                sub_label.get_style_context().add_class("tool-subtitle")
+                header_line.pack_start(sub_label, False, False, 0)
+
+            header_line.pack_start(self.status_label, False, False, 0)
+            header_line.pack_start(self.running_badge, False, False, 0)
+            header_line.pack_start(self.update_badge, False, False, 0)
+            content_box.pack_start(header_line, False, False, 0)
+
+            desc_label = Gtk.Label(label=self.tool.get("description", ""))
+            desc_label.get_style_context().add_class("tool-desc")
+            desc_label.set_line_wrap(True)
+            desc_label.set_xalign(0)
+            content_box.pack_start(desc_label, False, False, 0)
+            self.pack_start(content_box, True, True, 0)
+
+            actions_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            actions_box.set_valign(Gtk.Align.CENTER)
+            actions_box.pack_start(self.update_btn, False, False, 0)
+            actions_box.pack_start(self.stop_btn, False, False, 0)
+            actions_box.pack_start(self.start_btn, False, False, 0)
+            actions_box.pack_start(self.term_btn, False, False, 0)
+            actions_box.pack_start(more_btn, False, False, 0)
+            self.pack_start(actions_box, False, False, 0)
+
+        self.update_status_badge()
+        self.update_running_state()
+
+        if self.tool.get("update_available"):
+            self.show_update_indicator(self.tool.get("remote_sha", ""))
+
+    def _build_more_menu_button(self):
         more_btn = Gtk.MenuButton()
         more_btn.set_label("⋮")
         more_btn.get_style_context().add_class("btn-secondary")
         more_btn.set_tooltip_text("Weitere Aktionen")
-        
+
         menu = Gtk.Menu()
-        
+
         m_code = Gtk.MenuItem(label="💻 In VS Code öffnen")
         m_code.connect("activate", self.on_open_code)
         menu.append(m_code)
@@ -359,8 +552,7 @@ class ToolCard(Gtk.Box):
         m_folder.connect("activate", self.on_open_folder)
         menu.append(m_folder)
 
-        m_sep1 = Gtk.SeparatorMenuItem()
-        menu.append(m_sep1)
+        menu.append(Gtk.SeparatorMenuItem())
 
         if self.tool.get("repo"):
             m_check_upd = Gtk.MenuItem(label="🌐 Auf GitHub-Update prüfen")
@@ -371,7 +563,12 @@ class ToolCard(Gtk.Box):
             m_force_upd.connect("activate", lambda w: self.perform_update(launch_after=False))
             menu.append(m_force_upd)
 
-        m_reextract = Gtk.MenuItem(label="🔄 Neu entpacken (Lokale Zip überschreiben)")
+        if self.tool.get("type") == "rust":
+            m_clean = Gtk.MenuItem(label="🧹 Build-Cache dieses Tools bereinigen")
+            m_clean.connect("activate", self.on_clean_single_cache)
+            menu.append(m_clean)
+
+        m_reextract = Gtk.MenuItem(label="🔄 Neu entpacken & bauen")
         m_reextract.connect("activate", self.on_reextract)
         menu.append(m_reextract)
 
@@ -381,14 +578,22 @@ class ToolCard(Gtk.Box):
 
         menu.show_all()
         more_btn.set_popup(menu)
-        actions_box.pack_start(more_btn, False, False, 0)
+        return more_btn
 
-        self.pack_start(actions_box, False, False, 0)
+    def update_star_label(self):
+        is_fav = bool(self.tool.get("favorite"))
+        self.star_btn.set_label("⭐" if is_fav else "☆")
 
-        self.update_status_badge()
+    def on_toggle_favorite(self, _widget):
+        self.tool["favorite"] = not bool(self.tool.get("favorite"))
+        save_config(self.app.config)
+        self.app.refresh_list()
 
-        if self.tool.get("update_available"):
-            self.show_update_indicator(self.tool.get("remote_sha", ""))
+    def on_clean_single_cache(self, _widget):
+        freed = clean_rust_target_cache(self.extracted_path, self.get_binary_path())
+        mb = freed / (1024 * 1024)
+        self.app.update_disk_usage_label()
+        self.app.show_info_toast(f"{self.tool.get('name')}: {mb:.1f} MB Compiler-Cache freigegeben.")
 
     def is_extracted(self):
         return self.extracted_path.exists() and self.extracted_path.is_dir()
@@ -411,6 +616,55 @@ class ToolCard(Gtk.Box):
                 and (self.extracted_path / "packages" / "api" / ".venv").exists()
             )
         return True
+
+    def is_running(self) -> bool:
+        tid = self.tool.get("id", "")
+        proc = self.app.running_procs.get(tid)
+        if proc is not None and proc.poll() is None:
+            return True
+
+        ttype = self.tool.get("type", "custom")
+        if ttype == "rust":
+            bin_name = (self.tool.get("package_name") or tid).replace("_", "-")
+            if bin_name:
+                res = subprocess.run(["pgrep", "-x", bin_name[:15]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return res.returncode == 0
+        elif ttype == "node/python" and tid == "deckcraft":
+            res = subprocess.run(["fuser", "8000/tcp"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return res.returncode == 0
+        return False
+
+    def update_running_state(self):
+        running = self.is_running()
+        ctx = self.get_style_context()
+        if running:
+            ctx.add_class("tool-card-running")
+            self.running_badge.show()
+            self.stop_btn.show()
+        else:
+            ctx.remove_class("tool-card-running")
+            self.running_badge.hide()
+            self.stop_btn.hide()
+
+    def on_stop_clicked(self, _widget):
+        tid = self.tool.get("id", "")
+        ttype = self.tool.get("type", "custom")
+
+        proc = self.app.running_procs.pop(tid, None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if ttype == "rust":
+            bin_name = (self.tool.get("package_name") or tid).replace("_", "-")
+            subprocess.run(["pkill", "-x", bin_name[:15]], stderr=subprocess.DEVNULL)
+        elif ttype == "node/python" and tid == "deckcraft":
+            subprocess.run(["fuser", "-k", "8000/tcp"], stderr=subprocess.DEVNULL)
+            subprocess.run(["fuser", "-k", "3000/tcp"], stderr=subprocess.DEVNULL)
+
+        GLib.timeout_add(300, lambda: self.update_running_state() or False)
 
     def update_status_badge(self):
         ctx = self.status_label.get_style_context()
@@ -440,7 +694,7 @@ class ToolCard(Gtk.Box):
                 self.start_btn.set_label("⬇️ Installieren & Starten")
 
     def show_update_indicator(self, remote_sha=""):
-        txt = f"⬆️ Update ({remote_sha})" if remote_sha else "⬆️ Update verfügbar"
+        txt = f"⬆️ Update ({remote_sha})" if remote_sha else "⬆️ Update"
         self.update_badge.set_text(txt)
         self.update_badge.show()
         self.update_btn.show()
@@ -496,7 +750,6 @@ class ToolCard(Gtk.Box):
         threading.Thread(target=worker, daemon=True).start()
 
     def _compile_or_setup_sync(self):
-        """Kompiliert oder richtet das entpackte Tool im Hintergrund-Thread ein."""
         ttype = self.tool.get("type", "custom")
         pkg = self.tool.get("package_name") or self.tool.get("id", "")
         log_dir = self.workspace_dir / ".build_logs"
@@ -504,7 +757,6 @@ class ToolCard(Gtk.Box):
         log_file = log_dir / f"{pkg}.log"
 
         if ttype == "rust" and pkg:
-            # Falls Rust/Cargo noch nicht installiert ist, automatisch im Hintergrund via rustup installieren
             if not shutil.which("cargo"):
                 GLib.idle_add(lambda: self.start_btn.set_label("⏳ Installiere Rust..."))
                 subprocess.run(
@@ -528,8 +780,10 @@ class ToolCard(Gtk.Box):
                 raise RuntimeError(
                     f"Kompilierung von '{pkg}' fehlgeschlagen (Exit-Code {res.returncode}).\n"
                     f"Details im Log: {log_file}\n\n"
-                    f"Tipp: Prüfe mit './setup.sh', ob alle System-Pakete (libasound2-dev, libwebkit2gtk-4.1-dev, libclang-dev, cmake) installiert sind."
+                    f"Tipp: Prüfe mit './setup.sh', ob alle System-Pakete installiert sind."
                 )
+            # Option 1: Nach erfolgreichem Build direkt den mehrere GB großen Zwischen-Cache leeren!
+            clean_rust_target_cache(self.extracted_path, self.get_binary_path())
 
         elif ttype == "node/python":
             GLib.idle_add(lambda: self.start_btn.set_label("⚙️ Richte Backend ein..."))
@@ -543,13 +797,6 @@ class ToolCard(Gtk.Box):
                     subprocess.run(["npm", "install"], cwd=str(web_dir), stdout=lf, stderr=subprocess.STDOUT, check=False)
 
     def perform_update(self, launch_after=False, in_terminal=False, on_done=None, force_download=True):
-        """
-        Vollautomatische Pipeline:
-        1. Lädt ZIP automatisch von GitHub (falls noch nicht vorhanden oder bei Update)
-        2. Entpackt das Archiv automatisch in workspace/
-        3. Kompiliert das Release-Binary automatisch im Hintergrund
-        4. Startet das Programm auf Wunsch sofort im Anschluss
-        """
         repo = self.tool.get("repo")
         branch = self.tool.get("branch", "main")
         zip_name = self.tool.get("zip_name", f"{self.tool.get('id')}-{branch}.zip")
@@ -562,7 +809,6 @@ class ToolCard(Gtk.Box):
             zip_path = BASE_DIR / zip_name
             tmp_zip = BASE_DIR / f".tmp_{zip_name}"
             try:
-                # Schritt 1: Von GitHub herunterladen (wenn force_download oder weder entpackt noch ZIP vorhanden)
                 need_download = force_download or (not self.is_extracted() and not zip_path.exists())
                 if need_download:
                     if not repo:
@@ -582,21 +828,18 @@ class ToolCard(Gtk.Box):
                             GLib.idle_add(lambda m=mb: self.start_btn.set_label(f"⬇️ Lade ({m:.1f} MB)..."))
                     tmp_zip.replace(zip_path)
 
-                # Schritt 2: Entpacken (wenn force_download oder noch nicht entpackt)
                 if force_download or not self.is_extracted():
                     GLib.idle_add(lambda: self.start_btn.set_label("📦 Entpacke..."))
                     self.workspace_dir.mkdir(parents=True, exist_ok=True)
                     with zipfile.ZipFile(zip_path, "r") as zf:
                         zf.extractall(self.workspace_dir)
 
-                # Speichere Commit-SHA falls bekannt
                 remote_sha = self.tool.get("remote_sha")
                 if remote_sha:
                     versions = load_versions()
                     versions[self.tool.get("id")] = remote_sha
                     save_versions(versions)
 
-                # Schritt 3: Automatisch kompilieren / einrichten (wenn force_download oder noch nicht gebaut)
                 if force_download or not self.is_built():
                     self._compile_or_setup_sync()
 
@@ -616,6 +859,7 @@ class ToolCard(Gtk.Box):
         self.term_btn.set_sensitive(True)
         self.update_btn.set_sensitive(True)
         self.update_status_badge()
+        self.app.update_disk_usage_label()
 
         if success:
             self.tool["update_available"] = False
@@ -644,7 +888,6 @@ class ToolCard(Gtk.Box):
         if self.is_built():
             self.launch_tool(in_terminal=in_terminal)
         else:
-            # Vollautomatisch herunterladen (falls nötig), entpacken, kompilieren und danach starten!
             self.perform_update(
                 launch_after=True,
                 in_terminal=in_terminal,
@@ -657,25 +900,29 @@ class ToolCard(Gtk.Box):
             self.app.show_error(f"Kein Startbefehl für {self.tool.get('name')} konfiguriert.")
             return
 
+        # Option 4: Merke letzten Startzeitpunkt für "Zuletzt verwendet"-Sortierung
+        self.tool["last_used"] = int(time.time())
+        save_config(self.app.config)
+
         working_dir = self.extracted_path
         if not working_dir.exists():
             working_dir = self.workspace_dir
 
+        tool_id = self.tool.get("id", "")
         tool_name = self.tool.get("name", "Tool")
         tool_type = self.tool.get("type", "custom")
 
-        # Falls das Tool ein fertig gebautes Rust-Desktop-Programm ist und nicht explizit
-        # der "📟 Terminal"-Button geklickt wurde, direkt ohne störendes Terminal-Fenster starten!
         if not in_terminal and tool_type == "rust" and self.is_built():
             bin_path = self.get_binary_path()
             try:
-                subprocess.Popen([str(bin_path)], cwd=str(working_dir))
+                proc = subprocess.Popen([str(bin_path)], cwd=str(working_dir))
+                self.app.running_procs[tool_id] = proc
+                self.update_running_state()
                 self.app.show_info_toast(f"'{tool_name}' gestartet.")
                 return
             except Exception as e:
                 print(f"Direktstart fehlgeschlagen, nutze Terminal-Fallback: {e}", file=sys.stderr)
 
-        # Create helper runner script that checks environment and runs command
         runner_script = working_dir / ".run_tool.sh"
         script_content = f"""#!/usr/bin/env bash
 echo "=========================================================="
@@ -685,28 +932,10 @@ echo "  ⚡ Befehl: {command}"
 echo "=========================================================="
 echo ""
 
-# Environment vorbereiten
 if [ -f "$HOME/.cargo/env" ]; then
     source "$HOME/.cargo/env"
 fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-
-# Prüfe Abhängigkeiten
-if [[ "{tool_type}" == "rust" ]]; then
-    if ! command -v cargo &> /dev/null; then
-        echo "⚠️  HINWEIS: Rust/Cargo ist noch nicht installiert!"
-        echo "   Installiere Rust automatisch..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        if [ -f "$HOME/.cargo/env" ]; then
-            source "$HOME/.cargo/env"
-        fi
-        export PATH="$HOME/.cargo/bin:$PATH"
-    fi
-elif [[ "{tool_type}" == "node/python" ]]; then
-    if ! command -v node &> /dev/null && ! command -v npm &> /dev/null; then
-        echo "⚠️  HINWEIS: Node.js/npm ist noch nicht installiert!"
-    fi
-fi
 
 cd "{working_dir}" || exit 1
 {command}
@@ -730,26 +959,21 @@ read -r
         except Exception as e:
             print(f"Fehler beim Erstellen des Runner-Skripts: {e}", file=sys.stderr)
 
-        # Run in terminal or background
         terminal_cmd = None
         if shutil.which("gnome-terminal"):
             terminal_cmd = ["gnome-terminal", f"--title={tool_name}", "--", "bash", str(runner_script)]
         elif shutil.which("xterm"):
             terminal_cmd = ["xterm", "-T", tool_name, "-e", f"bash '{runner_script}'"]
 
-        if terminal_cmd:
-            try:
-                subprocess.Popen(terminal_cmd, cwd=str(working_dir))
-                self.app.show_info_toast(f"'{tool_name}' im Terminal gestartet.")
-            except Exception as e:
-                self.app.show_error(f"Fehler beim Starten des Terminals: {e}")
-        else:
-            # Fallback to direct subprocess
-            try:
-                subprocess.Popen(["bash", str(runner_script)], cwd=str(working_dir))
-                self.app.show_info_toast(f"'{tool_name}' gestartet.")
-            except Exception as e:
-                self.app.show_error(f"Fehler beim Starten: {e}")
+        try:
+            if terminal_cmd:
+                proc = subprocess.Popen(terminal_cmd, cwd=str(working_dir))
+            else:
+                proc = subprocess.Popen(["bash", str(runner_script)], cwd=str(working_dir))
+            self.app.running_procs[tool_id] = proc
+            GLib.timeout_add(500, lambda: self.update_running_state() or False)
+        except Exception as e:
+            self.app.show_error(f"Fehler beim Starten: {e}")
 
     def on_open_code(self, widget):
         self.ensure_extracted(lambda success: self._open_in_code() if success else None)
@@ -825,7 +1049,7 @@ read -r
 class CraftLauncherWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="Craft Launcher - Tool Schnellauswahl")
-        self.set_default_size(940, 700)
+        self.set_default_size(980, 720)
         self.set_position(Gtk.WindowPosition.CENTER)
         launcher_icon = BASE_DIR / "craft-launcher.svg"
         if launcher_icon.exists():
@@ -835,6 +1059,10 @@ class CraftLauncherWindow(Gtk.Window):
                 pass
 
         self.config = load_config()
+        self.running_procs = {}
+        self.active_cards = []
+        self.view_mode = self.config.get("view_mode", "list")
+
         self.auto_discover_new_zips()
 
         self.active_category = "Alle"
@@ -843,15 +1071,23 @@ class CraftLauncherWindow(Gtk.Window):
         self.setup_css()
         self.build_ui()
         self.refresh_list()
+        self.update_disk_usage_label()
 
-        # Prüfe kurz nach dem Start automatisch im Hintergrund, ob noch Tools heruntergeladen/gebaut werden müssen
+        # Prüfe beim Start automatisch im Hintergrund, ob noch Tools gebaut werden müssen
         GLib.timeout_add_seconds(1, self._auto_prepare_missing_on_startup)
+        # Option 6: Alle 2 Sekunden laufende Prozesse aktualisieren
+        GLib.timeout_add_seconds(2, self._poll_running_processes)
 
     def _auto_prepare_missing_on_startup(self):
-        missing = [c for c in self.cards_box.get_children() if isinstance(c, ToolCard) and not c.is_built()]
+        missing = [c for c in self.active_cards if not c.is_built()]
         if missing:
             self.on_prepare_all_tools(self.btn_prepare_all)
         return False
+
+    def _poll_running_processes(self):
+        for card in self.active_cards:
+            card.update_running_state()
+        return True
 
     def setup_css(self):
         provider = Gtk.CssProvider()
@@ -868,7 +1104,6 @@ class CraftLauncherWindow(Gtk.Window):
         updated = False
         for z in all_zips:
             if z not in existing_zips:
-                # Add discovered zip
                 base_name = z.replace(".zip", "")
                 clean_name = base_name.replace("-main", "").replace("-master", "")
                 self.config["tools"].append({
@@ -900,25 +1135,43 @@ class CraftLauncherWindow(Gtk.Window):
         header.props.subtitle = "Schnellauswahl & Auto-Installer für Kreativ- & Office-Tools"
         self.set_titlebar(header)
 
-        # Open Workspace button in header
-        btn_ws = Gtk.Button(label="📁 Workspace")
-        btn_ws.set_tooltip_text("Arbeitsordner öffnen")
+        # Left Header Buttons: View Mode Toggle (Option 4) & Add GitHub Tool (Option 5)
+        self.btn_view_mode = Gtk.Button(
+            label="⊞ Kacheln" if self.view_mode == "list" else "☰ Liste"
+        )
+        self.btn_view_mode.set_tooltip_text("Zwischen Listen-Ansicht und kompakter Kachel-Ansicht (Grid) wechseln")
+        self.btn_view_mode.connect("clicked", self.on_toggle_view_mode)
+        header.pack_start(self.btn_view_mode)
+
+        btn_add_tool = Gtk.Button(label="➕ GitHub-Tool")
+        btn_add_tool.set_tooltip_text("Neues Tool direkt per GitHub-Link hinzufügen & automatisch einrichten")
+        btn_add_tool.connect("clicked", self.on_add_github_tool_dialog)
+        header.pack_start(btn_add_tool)
+
+        # Right Header Buttons
+        btn_ws = Gtk.Button(label="📁")
+        btn_ws.set_tooltip_text("Workspace-Ordner im Dateimanager öffnen")
         btn_ws.connect("clicked", lambda b: subprocess.Popen(["xdg-open", str(BASE_DIR / self.config.get("workspace_dir", "workspace"))]))
         header.pack_end(btn_ws)
 
-        # Refresh button
         btn_refresh = Gtk.Button(label="🔄")
         btn_refresh.set_tooltip_text("Tools & Status neu laden")
         btn_refresh.connect("clicked", self.on_refresh_clicked)
         header.pack_end(btn_refresh)
 
-        # Check all updates button
-        self.btn_check_updates = Gtk.Button(label="🌐 Updates prüfen")
+        # Option 1: Clean Build Cache Button
+        self.btn_clean_cache = Gtk.Button(label="🧹 Speicherplatz")
+        self.btn_clean_cache.set_tooltip_text(
+            "Speicherplatz-Turbo: Löscht unnötige Rust-Compiler-Zwischendateien (spart bis zu 28 GB!), alle Programme bleiben startbereit"
+        )
+        self.btn_clean_cache.connect("clicked", self.on_clean_all_caches)
+        header.pack_end(self.btn_clean_cache)
+
+        self.btn_check_updates = Gtk.Button(label="🌐 Updates")
         self.btn_check_updates.set_tooltip_text("Alle Tools auf neuere Versionen auf GitHub prüfen")
         self.btn_check_updates.connect("clicked", self.on_check_all_updates)
         header.pack_end(self.btn_check_updates)
 
-        # Prepare/Install all missing tools button
         self.btn_prepare_all = Gtk.Button(label="⬇️ Alle bereitstellen")
         self.btn_prepare_all.set_tooltip_text(
             "Lädt, entpackt und kompiliert alle noch fehlenden Tools vollautomatisch im Hintergrund"
@@ -938,12 +1191,13 @@ class CraftLauncherWindow(Gtk.Window):
         search_box.pack_start(self.search_entry, True, True, 0)
         main_box.pack_start(search_box, False, False, 0)
 
-        # Category Filter Pills
+        # Category Filter Pills (inkl. ⭐ Favoriten)
         cat_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         cat_box.get_style_context().add_class("category-bar")
 
         self.categories = [
             "Alle",
+            "⭐ Favoriten",
             "Grafik & Bild",
             "Video & Audio",
             "Dokumente & Layout",
@@ -964,61 +1218,232 @@ class CraftLauncherWindow(Gtk.Window):
 
         main_box.pack_start(cat_box, False, False, 0)
 
-        # System Info Banner
+        # System & Disk Info Banner
         self.banner_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         self.banner_box.get_style_context().add_class("status-banner")
-        
+
         has_cargo = check_command_available("cargo")
         has_node = check_command_available("node")
         has_python = check_command_available("python3")
 
-        cargo_text = "Rust/Cargo: <span color='#a6e3a1'>✅ Bereit</span>" if has_cargo else "Rust/Cargo: <span color='#f9e2af'>⏳ Wird bei Bedarf installiert</span>"
-        python_text = "Python: <span color='#a6e3a1'>✅ Bereit</span>" if has_python else "Python: ⚠️ Nicht gefunden"
-        node_text = "Node.js: <span color='#a6e3a1'>✅ Bereit</span>" if has_node else "Node.js: ℹ️ Optional"
+        cargo_text = "Rust: <span color='#a6e3a1'>✅ Bereit</span>" if has_cargo else "Rust: <span color='#f9e2af'>⏳ Auto-Install</span>"
+        python_text = "Python: <span color='#a6e3a1'>✅ Bereit</span>" if has_python else "Python: ⚠️"
+        node_text = "Node.js: <span color='#a6e3a1'>✅ Bereit</span>" if has_node else "Node.js: ℹ️"
 
         info_lbl = Gtk.Label()
         info_lbl.set_use_markup(True)
         info_lbl.set_markup(
             f"<b>System:</b>  {cargo_text}  │  {python_text}  │  {node_text}  │  "
-            f"<i>Klick auf ein Tool lädt &amp; baut es bei Bedarf vollautomatisch im Hintergrund</i>"
+            f"<i>⭐ Favoriten stehen automatisch oben • Sortiert nach zuletzt genutzt</i>"
         )
         self.banner_box.pack_start(info_lbl, False, False, 0)
 
-        if not has_cargo:
-            install_btn = Gtk.Button(label="🛠️ System-Setup")
-            install_btn.get_style_context().add_class("btn-secondary")
-            install_btn.connect("clicked", self.show_rust_help)
-            self.banner_box.pack_end(install_btn, False, False, 0)
+        self.disk_label = Gtk.Label()
+        self.disk_label.set_use_markup(True)
+        self.banner_box.pack_end(self.disk_label, False, False, 0)
 
         main_box.pack_start(self.banner_box, False, False, 0)
 
-        # Scrolled List of Tools
-        scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scrolled.set_hexpand(True)
-        scrolled.set_vexpand(True)
+        # Scrolled Container
+        self.scrolled = Gtk.ScrolledWindow()
+        self.scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.scrolled.set_hexpand(True)
+        self.scrolled.set_vexpand(True)
 
         self.cards_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.cards_box.set_border_width(8)
-        scrolled.add(self.cards_box)
+        self.scrolled.add(self.cards_box)
 
-        main_box.pack_start(scrolled, True, True, 0)
+        main_box.pack_start(self.scrolled, True, True, 0)
 
-    def show_rust_help(self, widget):
-        dialog = Gtk.MessageDialog(
+    def update_disk_usage_label(self):
+        def worker():
+            ws = BASE_DIR / self.config.get("workspace_dir", "workspace")
+            gb = get_directory_size_gb(ws)
+            color = "#a6e3a1" if gb < 5.0 else "#f9e2af"
+            GLib.idle_add(
+                lambda: self.disk_label.set_markup(f"💾 Workspace: <span color='{color}'><b>{gb:.1f} GB</b></span>")
+            )
+        threading.Thread(target=worker, daemon=True).start()
+
+    # --- Option 1: Alle Compiler-Caches leeren ---
+    def on_clean_all_caches(self, _widget):
+        self.btn_clean_cache.set_sensitive(False)
+        self.btn_clean_cache.set_label("🧹 Räume auf...")
+
+        def worker():
+            ws = BASE_DIR / self.config.get("workspace_dir", "workspace")
+            total_freed = 0
+            for t in self.config.get("tools", []):
+                if t.get("type") == "rust":
+                    ext = ws / t.get("extracted_dir", t.get("id", ""))
+                    pkg = t.get("package_name") or t.get("id", "")
+                    bp = ext / "target" / "release" / pkg.replace("_", "-")
+                    total_freed += clean_rust_target_cache(ext, bp)
+            gb = total_freed / (1024 ** 3)
+            mb = total_freed / (1024 ** 2)
+
+            def done():
+                self.btn_clean_cache.set_sensitive(True)
+                if gb >= 0.1:
+                    self.btn_clean_cache.set_label(f"✅ {gb:.1f} GB frei!")
+                else:
+                    self.btn_clean_cache.set_label(f"✅ {mb:.0f} MB frei!")
+                self.update_disk_usage_label()
+                GLib.timeout_add_seconds(4, lambda: self.btn_clean_cache.set_label("🧹 Speicherplatz") or False)
+
+            GLib.idle_add(done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # --- Option 4: Umschalter Liste <-> Kacheln (Grid) ---
+    def on_toggle_view_mode(self, _widget):
+        self.view_mode = "grid" if self.view_mode == "list" else "list"
+        self.config["view_mode"] = self.view_mode
+        save_config(self.config)
+        self.btn_view_mode.set_label("⊞ Kacheln" if self.view_mode == "list" else "☰ Liste")
+        self.refresh_list()
+
+    # --- Option 5: Neues Tool per GitHub-Link hinzufügen ---
+    def on_add_github_tool_dialog(self, _widget):
+        dialog = Gtk.Dialog(
+            title="➕ Neues Tool von GitHub hinzufügen",
             transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.OK,
-            text="Automatische Einrichtung"
+            flags=0
         )
-        dialog.format_secondary_text(
-            "Der Craft Launcher lädt und kompiliert alle Tools vollautomatisch im Hintergrund.\n\n"
-            "Auf einem frischen Ubuntu/Debian-System kannst du einmalig './setup.sh' ausführen, "
-            "um alle benötigten System-Bibliotheken (Audio, GTK/WebKit, Clang, CMake, Rust) automatisch zu installieren."
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "🔍 Automatisch einrichten", Gtk.ResponseType.OK
         )
-        dialog.run()
+        dialog.set_default_size(520, -1)
+
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
+
+        lbl_info = Gtk.Label()
+        lbl_info.set_use_markup(True)
+        lbl_info.set_markup(
+            "<b>GitHub-Repository-Link oder <tt>owner/repo</tt> eingeben:</b>\n"
+            "<span size='small' color='#a6adc8'>Der Launcher liest Name, Beschreibung, Branch, Cargo-Paket und App-Icon "
+            "automatisch aus und kompiliert das Tool im Hintergrund.</span>"
+        )
+        lbl_info.set_line_wrap(True)
+        lbl_info.set_xalign(0)
+        box.pack_start(lbl_info, False, False, 0)
+
+        url_entry = Gtk.Entry()
+        url_entry.set_placeholder_text("z. B. https://github.com/storytold/lightcraft")
+        box.pack_start(url_entry, False, False, 0)
+
+        cat_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        cat_lbl = Gtk.Label(label="Kategorie:")
+        cat_combo = Gtk.ComboBoxText()
+        for c in ["Grafik & Bild", "Video & Audio", "Dokumente & Layout", "Office", "3D & CAD", "Präsentationen & KI"]:
+            cat_combo.append_text(c)
+        cat_combo.set_active(0)
+        cat_row.pack_start(cat_lbl, False, False, 0)
+        cat_row.pack_start(cat_combo, True, True, 0)
+        box.pack_start(cat_row, False, False, 0)
+
+        sub_entry = Gtk.Entry()
+        sub_entry.set_placeholder_text("Optional: Untertitel (z. B. Adobe Lightroom Alternative)")
+        box.pack_start(sub_entry, False, False, 0)
+
+        dialog.show_all()
+        resp = dialog.run()
+        raw_url = url_entry.get_text().strip()
+        chosen_cat = cat_combo.get_active_text() or "Grafik & Bild"
+        chosen_sub = sub_entry.get_text().strip()
         dialog.destroy()
+
+        if resp != Gtk.ResponseType.OK or not raw_url:
+            return
+
+        # Parse owner/repo from URL
+        m = re.search(r"github\.com/([^/]+/[^/#?]+)", raw_url)
+        repo_slug = m.group(1) if m else raw_url.strip("/")
+        repo_slug = re.sub(r"\.git$", "", repo_slug)
+        if "/tree/" in repo_slug:
+            repo_slug = repo_slug.split("/tree/")[0]
+
+        if "/" not in repo_slug:
+            self.show_error(f"Ungültige GitHub-Adresse: {raw_url}")
+            return
+
+        self.btn_prepare_all.set_label(f"⏳ Füge {repo_slug} hinzu...")
+
+        def add_worker():
+            try:
+                api_url = f"https://api.github.com/repos/{repo_slug}"
+                req = urllib.request.Request(api_url, headers={"User-Agent": "CraftLauncher/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    meta = json.loads(r.read().decode("utf-8"))
+
+                branch = meta.get("default_branch", "main")
+                repo_name = meta.get("name", repo_slug.split("/")[1])
+                tid = repo_name.lower()
+                desc = meta.get("description") or f"Open-Source Tool aus {repo_slug}"
+                lang = (meta.get("language") or "").lower()
+                ttype = "rust" if lang == "rust" else "custom"
+
+                # Versuche offizielles App-Icon direkt von GitHub herunterzuladen
+                ICONS_DIR.mkdir(parents=True, exist_ok=True)
+                icon_dest = ICONS_DIR / f"{tid}.png"
+                icon_candidates = [
+                    f"https://raw.githubusercontent.com/{repo_slug}/{branch}/assets/app-icon/hicolor/256x256/apps/ai.storyteller.{tid}.png",
+                    f"https://raw.githubusercontent.com/{repo_slug}/{branch}/assets/app-icon/{tid}-256.png",
+                    f"https://raw.githubusercontent.com/{repo_slug}/{branch}/assets/app-icon/{tid}-1024.png",
+                    f"https://raw.githubusercontent.com/{repo_slug}/{branch}/assets/icons/app/linux/exports/hicolor/256x256/apps/ai.storyteller.{tid}.png",
+                ]
+                for ic_url in icon_candidates:
+                    try:
+                        ic_req = urllib.request.Request(ic_url, headers={"User-Agent": "CraftLauncher/1.0"})
+                        with urllib.request.urlopen(ic_req, timeout=6) as ic_resp, open(icon_dest, "wb") as ic_f:
+                            shutil.copyfileobj(ic_resp, ic_f)
+                        break
+                    except Exception:
+                        continue
+
+                new_tool = {
+                    "id": tid,
+                    "zip_name": f"{repo_name}-{branch}.zip",
+                    "extracted_dir": f"{repo_name}-{branch}",
+                    "name": repo_name.capitalize() if repo_name.islower() else repo_name,
+                    "subtitle": chosen_sub or f"{meta.get('language') or 'Open-Source'} App",
+                    "description": desc,
+                    "category": chosen_cat,
+                    "tags": [tid, chosen_cat.lower()],
+                    "icon": "🛠️",
+                    "icon_path": f"icons/{tid}.png",
+                    "color": "#89b4fa",
+                    "type": ttype,
+                    "command": f"if [ -x target/release/{tid} ]; then ./target/release/{tid} \"$@\"; else cargo run --release -p {tid} -- \"$@\"; fi" if ttype == "rust" else "bash",
+                    "repo": repo_slug,
+                    "branch": branch,
+                    "package_name": tid
+                }
+
+                def finish_add():
+                    # Ersetze falls ID schon existiert, sonst anhängen
+                    tools = [t for t in self.config.get("tools", []) if t.get("id") != tid]
+                    tools.append(new_tool)
+                    self.config["tools"] = tools
+                    save_config(self.config)
+                    self.btn_prepare_all.set_label("⬇️ Alle bereitstellen")
+                    self.refresh_list()
+                    # Starte direkt Download & Build für das neue Tool
+                    for c in self.active_cards:
+                        if c.tool.get("id") == tid:
+                            c.perform_update(launch_after=False, force_download=True)
+                            break
+
+                GLib.idle_add(finish_add)
+            except Exception as e:
+                GLib.idle_add(lambda: self.btn_prepare_all.set_label("⬇️ Alle bereitstellen"))
+                GLib.idle_add(lambda: self.show_error(f"Konnte Repository '{repo_slug}' nicht abrufen:\n{e}"))
+
+        threading.Thread(target=add_worker, daemon=True).start()
 
     def on_search_changed(self, entry):
         self.search_query = entry.get_text().strip().lower()
@@ -1032,7 +1457,6 @@ class CraftLauncherWindow(Gtk.Window):
             self.active_category = cat_name
             self.refresh_list()
         else:
-            # Prevent unchecking all
             if not any(b.get_active() for b in self.cat_buttons):
                 button.set_active(True)
 
@@ -1040,10 +1464,11 @@ class CraftLauncherWindow(Gtk.Window):
         self.config = load_config()
         self.auto_discover_new_zips()
         self.refresh_list()
+        self.update_disk_usage_label()
         self.show_info_toast("Liste aktualisiert.")
 
     def on_prepare_all_tools(self, widget):
-        cards = [c for c in self.cards_box.get_children() if isinstance(c, ToolCard) and not c.is_built()]
+        cards = [c for c in self.active_cards if not c.is_built()]
         if not cards:
             self.btn_prepare_all.set_label("✅ Alle startbereit!")
             GLib.timeout_add_seconds(3, lambda: self.btn_prepare_all.set_label("⬇️ Alle bereitstellen") or False)
@@ -1056,6 +1481,7 @@ class CraftLauncherWindow(Gtk.Window):
             if idx >= total:
                 self.btn_prepare_all.set_sensitive(True)
                 self.btn_prepare_all.set_label("✅ Alle bereit!")
+                self.update_disk_usage_label()
                 GLib.timeout_add_seconds(4, lambda: self.btn_prepare_all.set_label("⬇️ Alle bereitstellen") or False)
                 return
             card = cards[idx]
@@ -1071,10 +1497,10 @@ class CraftLauncherWindow(Gtk.Window):
     def on_check_all_updates(self, widget):
         self.btn_check_updates.set_sensitive(False)
         self.btn_check_updates.set_label("⏳ Prüfe...")
-        cards = [c for c in self.cards_box.get_children() if isinstance(c, ToolCard)]
+        cards = list(self.active_cards)
         if not cards:
             self.btn_check_updates.set_sensitive(True)
-            self.btn_check_updates.set_label("🌐 Updates prüfen")
+            self.btn_check_updates.set_label("🌐 Updates")
             return
 
         remaining = [len(cards)]
@@ -1089,52 +1515,68 @@ class CraftLauncherWindow(Gtk.Window):
                 if updates_found[0] > 0:
                     self.btn_check_updates.set_label(f"⬆️ {updates_found[0]} Update(s)")
                 else:
-                    self.btn_check_updates.set_label("✅ Alle aktuell")
-                    GLib.timeout_add_seconds(3, lambda: self.btn_check_updates.set_label("🌐 Updates prüfen") or False)
+                    self.btn_check_updates.set_label("✅ Aktuell")
+                    GLib.timeout_add_seconds(3, lambda: self.btn_check_updates.set_label("🌐 Updates") or False)
 
         for card in cards:
             card.check_for_update(silent=True, on_done=card_done)
 
     def refresh_list(self):
-        # Clear existing cards
         for child in self.cards_box.get_children():
             self.cards_box.remove(child)
+        self.active_cards = []
 
-        tools = self.config.get("tools", [])
-        visible_count = 0
+        tools = list(self.config.get("tools", []))
+        # Option 4: Sortiere Favoriten (⭐) nach oben, danach nach zuletzt verwendet (last_used)
+        tools.sort(key=lambda t: (bool(t.get("favorite")), int(t.get("last_used", 0))), reverse=True)
 
+        filtered = []
         for t in tools:
-            # Check category filter
             cat = t.get("category", "")
-            if self.active_category != "Alle" and cat != self.active_category:
+            if self.active_category == "⭐ Favoriten":
+                if not t.get("favorite"):
+                    continue
+            elif self.active_category != "Alle" and cat != self.active_category:
                 continue
 
-            # Check search query
             if self.search_query:
                 name = t.get("name", "").lower()
                 subtitle = t.get("subtitle", "").lower()
                 desc = t.get("description", "").lower()
                 tags = [tag.lower() for tag in t.get("tags", [])]
                 query = self.search_query
-
-                match = (
-                    query in name or
-                    query in subtitle or
-                    query in desc or
-                    any(query in tag for tag in tags)
-                )
-                if not match:
+                if not (query in name or query in subtitle or query in desc or any(query in tag for tag in tags)):
                     continue
 
-            card = ToolCard(t, self)
-            self.cards_box.pack_start(card, False, False, 0)
-            visible_count += 1
+            filtered.append(t)
 
-        if visible_count == 0:
+        if not filtered:
             empty_lbl = Gtk.Label(label="Keine Tools für diese Suche oder Kategorie gefunden.")
             empty_lbl.get_style_context().add_class("tool-desc")
             empty_lbl.set_margin_top(40)
             self.cards_box.pack_start(empty_lbl, True, True, 0)
+            self.cards_box.show_all()
+            return
+
+        if self.view_mode == "grid":
+            flow = Gtk.FlowBox()
+            flow.set_valign(Gtk.Align.START)
+            flow.set_max_children_per_line(3)
+            flow.set_min_children_per_line(2)
+            flow.set_selection_mode(Gtk.SelectionMode.NONE)
+            flow.set_homogeneous(True)
+            flow.set_row_spacing(6)
+            flow.set_column_spacing(6)
+            for t in filtered:
+                card = ToolCard(t, self, compact=True)
+                self.active_cards.append(card)
+                flow.add(card)
+            self.cards_box.pack_start(flow, False, False, 0)
+        else:
+            for t in filtered:
+                card = ToolCard(t, self, compact=False)
+                self.active_cards.append(card)
+                self.cards_box.pack_start(card, False, False, 0)
 
         self.cards_box.show_all()
 
@@ -1151,7 +1593,6 @@ class CraftLauncherWindow(Gtk.Window):
         dialog.destroy()
 
     def show_info_toast(self, message):
-        # We can display a gentle info or print to stdout
         print(f"[Craft Launcher] {message}")
 
 
@@ -1164,4 +1605,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
