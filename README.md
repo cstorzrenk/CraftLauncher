@@ -37,7 +37,7 @@ Ein moderner grafischer Desktop-Launcher (GTK3) zur Schnellauswahl, Verwaltung u
 | <img src="icons/artcraft.png" width="28"> | **ArtCraft** | 3D & CAD | Interaktive KI-Kreativ-IDE & 2D/3D-Compositing |
 | <img src="icons/gridcraft.png" width="28"> | **GridCraft** | Office | Reaktive Tabellenkalkulation (*Microsoft Excel*) |
 | <img src="icons/wordcraft.png" width="28"> | **WordCraft** | Office | Textverarbeitung & DOCX (*Microsoft Word*) |
-| <img src="icons/deckcraft.png" width="28"> | **DeckCraft** | Präsentationen & KI | KI-gestützter Präsentationsgenerator (FastAPI + Next.js) |
+| <img src="icons/deckcraft.png" width="28"> | **DeckCraft** | Office | Präsentationen, Folien-Layouts & PPTX (*Microsoft PowerPoint*) |
 
 ---
 

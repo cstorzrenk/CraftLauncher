@@ -279,7 +279,8 @@
       "branch": "main",
       "package_name": "artcraft_native",
       "ai_capable": true,
-      "ai_info": "Generative KI-Schnittstellen (OpenAI Sora, Grok, Fal.ai, GMI Cloud)"
+      "ai_info": "Generative KI-Schnittstellen (OpenAI Sora, Grok, Fal.ai, GMI Cloud)",
+      "last_used": 1792337038
     },
     {
       "id": "pdfcraft",
@@ -355,29 +356,35 @@
     },
     {
       "id": "deckcraft",
-      "zip_name": "DeckCraft-master.zip",
-      "extracted_dir": "DeckCraft-master",
+      "zip_name": "deckcraft-main.zip",
+      "extracted_dir": "deckcraft-main",
       "name": "DeckCraft",
-      "subtitle": "KI-Präsentationsgenerator",
-      "description": "Erstellt professionelle Folien und Präsentationen per KI (FastAPI Backend & Next.js Frontend).",
-      "category": "Präsentationen & KI",
+      "subtitle": "Microsoft PowerPoint Alternative",
+      "description": "Präsentationen, Folien-Layouts, Animationen, Übergänge, Diagramme und PPTX/PDF-Export in nativer Rust-Geschwindigkeit (inkl. MCP-KI-Steuerung).",
+      "category": "Office",
       "tags": [
         "deckcraft",
+        "powerpoint",
+        "keynote",
         "praesentation",
         "folien",
+        "pptx",
+        "office",
+        "slides",
         "ki",
-        "slides"
+        "mcp"
       ],
-      "icon": "🎴",
+      "icon": "📊",
       "icon_path": "icons/deckcraft.png",
-      "color": "#8b5cf6",
-      "type": "node/python",
-      "command": "if [ -f ../../scripts/run_deckcraft.sh ]; then bash ../../scripts/run_deckcraft.sh; else bash run_deckcraft.sh; fi",
-      "repo": "rioryugen/DeckCraft",
-      "branch": "master",
+      "color": "#ea580c",
+      "type": "rust",
+      "command": "if [ -x target/release/deckcraft ]; then ./target/release/deckcraft \"$@\"; else cargo run --release -p deckcraft -- \"$@\"; fi",
+      "repo": "storytold/deckcraft",
+      "branch": "main",
       "package_name": "deckcraft",
       "ai_capable": true,
-      "ai_info": "Nutzt zentrales KI-Modell (Gemini, OpenAI, Claude, Ollama) & Pexels/Pixabay automatisch"
+      "ai_info": "Integrierter MCP-Server (deckcraft-mcp) zur Steuerung von über 200 Folien-Befehlen durch KI-Agenten"
     }
-  ]
+  ],
+  "view_mode": "list"
 }

@@ -1581,12 +1581,12 @@ class CraftLauncherWindow(Gtk.Window):
         self.categories = [
             "Alle",
             "⭐ Favoriten",
+            "🤖 KI-Tools",
             "Grafik & Bild",
             "Video & Audio",
             "Dokumente & Layout",
             "Office",
-            "3D & CAD",
-            "Präsentationen & KI"
+            "3D & CAD"
         ]
 
         self.cat_buttons = []
@@ -1918,6 +1918,9 @@ class CraftLauncherWindow(Gtk.Window):
             cat = t.get("category", "")
             if self.active_category == "⭐ Favoriten":
                 if not t.get("favorite"):
+                    continue
+            elif self.active_category == "🤖 KI-Tools":
+                if not t.get("ai_capable"):
                     continue
             elif self.active_category != "Alle" and cat != self.active_category:
                 continue
