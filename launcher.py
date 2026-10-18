@@ -299,7 +299,6 @@ class ToolCard(Gtk.Box):
 
         # Status badge
         self.status_label = Gtk.Label()
-        self.update_status_badge()
         header_line.pack_start(self.status_label, False, False, 0)
 
         # Update badge (shown when update available)
@@ -326,9 +325,9 @@ class ToolCard(Gtk.Box):
         # Update Button (hidden until update found)
         self.update_btn = Gtk.Button(label="⬆️ Update")
         self.update_btn.get_style_context().add_class("btn-update")
-        self.update_btn.set_tooltip_text("Neueste ZIP-Version von GitHub herunterladen & aktualisieren")
+        self.update_btn.set_tooltip_text("Neueste Version von GitHub herunterladen & neu kompilieren")
         self.update_btn.set_no_show_all(True)
-        self.update_btn.connect("clicked", lambda b: self.perform_update())
+        self.update_btn.connect("clicked", lambda b: self.perform_update(launch_after=False))
         actions_box.pack_start(self.update_btn, False, False, 0)
 
         # Start Button
@@ -340,7 +339,7 @@ class ToolCard(Gtk.Box):
         # Terminal Button
         self.term_btn = Gtk.Button(label="📟 Terminal")
         self.term_btn.get_style_context().add_class("btn-secondary")
-        self.term_btn.set_tooltip_text("Im Terminal starten (für Logs & Build-Ausgaben)")
+        self.term_btn.set_tooltip_text("Im Terminal starten (für Logs & Konsolen-Ausgaben)")
         self.term_btn.connect("clicked", lambda b: self.on_start_clicked(b, in_terminal=True))
         actions_box.pack_start(self.term_btn, False, False, 0)
 
@@ -368,8 +367,8 @@ class ToolCard(Gtk.Box):
             m_check_upd.connect("activate", lambda w: self.check_for_update(silent=False))
             menu.append(m_check_upd)
 
-            m_force_upd = Gtk.MenuItem(label="⬇️ Neueste ZIP von GitHub laden & bauen")
-            m_force_upd.connect("activate", lambda w: self.perform_update())
+            m_force_upd = Gtk.MenuItem(label="⬇️ Von GitHub neu herunterladen & kompilieren")
+            m_force_upd.connect("activate", lambda w: self.perform_update(launch_after=False))
             menu.append(m_force_upd)
 
         m_reextract = Gtk.MenuItem(label="🔄 Neu entpacken (Lokale Zip überschreiben)")
@@ -386,11 +385,32 @@ class ToolCard(Gtk.Box):
 
         self.pack_start(actions_box, False, False, 0)
 
+        self.update_status_badge()
+
         if self.tool.get("update_available"):
             self.show_update_indicator(self.tool.get("remote_sha", ""))
 
     def is_extracted(self):
         return self.extracted_path.exists() and self.extracted_path.is_dir()
+
+    def get_binary_path(self):
+        pkg = self.tool.get("package_name") or self.tool.get("id", "")
+        bin_name = pkg.replace("_", "-")
+        return self.extracted_path / "target" / "release" / bin_name
+
+    def is_built(self):
+        if not self.is_extracted():
+            return False
+        ttype = self.tool.get("type", "custom")
+        if ttype == "rust":
+            bp = self.get_binary_path()
+            return bp.exists() and os.access(bp, os.X_OK)
+        elif ttype == "node/python":
+            return (
+                (self.extracted_path / "packages" / "web" / "node_modules").exists()
+                and (self.extracted_path / "packages" / "api" / ".venv").exists()
+            )
+        return True
 
     def update_status_badge(self):
         ctx = self.status_label.get_style_context()
@@ -398,15 +418,26 @@ class ToolCard(Gtk.Box):
         ctx.remove_class("badge-status-zipped")
 
         zip_file = BASE_DIR / self.tool.get("zip_name", "")
-        if self.is_extracted():
-            self.status_label.set_text("📂 Entpackt")
+        if self.is_built():
+            self.status_label.set_text("✅ Startbereit")
             ctx.add_class("badge-status-ready")
+            if hasattr(self, "start_btn"):
+                self.start_btn.set_label("🚀 Starten")
+        elif self.is_extracted():
+            self.status_label.set_text("⚙️ Noch nicht gebaut")
+            ctx.add_class("badge-status-zipped")
+            if hasattr(self, "start_btn"):
+                self.start_btn.set_label("⚙️ Bauen & Starten")
         elif zip_file.exists():
-            self.status_label.set_text("📦 Archiv")
+            self.status_label.set_text("📦 Archiv lokal")
             ctx.add_class("badge-status-zipped")
+            if hasattr(self, "start_btn"):
+                self.start_btn.set_label("📦 Einrichten & Starten")
         else:
-            self.status_label.set_text("☁️ GitHub")
+            self.status_label.set_text("☁️ Auto-Download")
             ctx.add_class("badge-status-zipped")
+            if hasattr(self, "start_btn"):
+                self.start_btn.set_label("⬇️ Installieren & Starten")
 
     def show_update_indicator(self, remote_sha=""):
         txt = f"⬆️ Update ({remote_sha})" if remote_sha else "⬆️ Update verfügbar"
@@ -434,7 +465,6 @@ class ToolCard(Gtk.Box):
                     local_sha = versions.get(tid)
 
                     if not local_sha:
-                        # Initialen Stand merken
                         versions[tid] = remote_sha
                         save_versions(versions)
                         if not silent:
@@ -465,115 +495,161 @@ class ToolCard(Gtk.Box):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def perform_update(self):
+    def _compile_or_setup_sync(self):
+        """Kompiliert oder richtet das entpackte Tool im Hintergrund-Thread ein."""
+        ttype = self.tool.get("type", "custom")
+        pkg = self.tool.get("package_name") or self.tool.get("id", "")
+        log_dir = self.workspace_dir / ".build_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / f"{pkg}.log"
+
+        if ttype == "rust" and pkg:
+            # Falls Rust/Cargo noch nicht installiert ist, automatisch im Hintergrund via rustup installieren
+            if not shutil.which("cargo"):
+                GLib.idle_add(lambda: self.start_btn.set_label("⏳ Installiere Rust..."))
+                subprocess.run(
+                    ["bash", "-c", "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"],
+                    check=True
+                )
+                cargo_bin = str(Path.home() / ".cargo" / "bin")
+                if cargo_bin not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = f"{cargo_bin}:{os.environ.get('PATH', '')}"
+
+            GLib.idle_add(lambda: self.start_btn.set_label("⚙️ Kompiliere..."))
+            with open(log_file, "w", encoding="utf-8") as lf:
+                res = subprocess.run(
+                    ["cargo", "build", "--release", "-p", pkg],
+                    cwd=str(self.extracted_path),
+                    stdout=lf,
+                    stderr=subprocess.STDOUT,
+                    check=False
+                )
+            if res.returncode != 0:
+                raise RuntimeError(
+                    f"Kompilierung von '{pkg}' fehlgeschlagen (Exit-Code {res.returncode}).\n"
+                    f"Details im Log: {log_file}\n\n"
+                    f"Tipp: Prüfe mit './setup.sh', ob alle System-Pakete (libasound2-dev, libwebkit2gtk-4.1-dev, libclang-dev, cmake) installiert sind."
+                )
+
+        elif ttype == "node/python":
+            GLib.idle_add(lambda: self.start_btn.set_label("⚙️ Richte Backend ein..."))
+            api_dir = self.extracted_path / "packages" / "api"
+            web_dir = self.extracted_path / "packages" / "web"
+            with open(log_file, "w", encoding="utf-8") as lf:
+                if api_dir.exists() and shutil.which("uv"):
+                    subprocess.run(["uv", "sync"], cwd=str(api_dir), stdout=lf, stderr=subprocess.STDOUT, check=False)
+                GLib.idle_add(lambda: self.start_btn.set_label("⚙️ Richte Web ein..."))
+                if web_dir.exists() and shutil.which("npm"):
+                    subprocess.run(["npm", "install"], cwd=str(web_dir), stdout=lf, stderr=subprocess.STDOUT, check=False)
+
+    def perform_update(self, launch_after=False, in_terminal=False, on_done=None, force_download=True):
+        """
+        Vollautomatische Pipeline:
+        1. Lädt ZIP automatisch von GitHub (falls noch nicht vorhanden oder bei Update)
+        2. Entpackt das Archiv automatisch in workspace/
+        3. Kompiliert das Release-Binary automatisch im Hintergrund
+        4. Startet das Programm auf Wunsch sofort im Anschluss
+        """
         repo = self.tool.get("repo")
         branch = self.tool.get("branch", "main")
         zip_name = self.tool.get("zip_name", f"{self.tool.get('id')}-{branch}.zip")
-        if not repo:
-            self.app.show_error("Kein GitHub-Repository für dieses Tool hinterlegt.")
-            return
 
         self.start_btn.set_sensitive(False)
+        self.term_btn.set_sensitive(False)
         self.update_btn.set_sensitive(False)
-        self.start_btn.set_label("⬇️ Lade ZIP...")
 
-        def update_worker():
-            zip_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
+        def pipeline_worker():
             zip_path = BASE_DIR / zip_name
             tmp_zip = BASE_DIR / f".tmp_{zip_name}"
             try:
-                req = urllib.request.Request(zip_url, headers={"User-Agent": "CraftLauncher/1.0"})
-                with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_zip, "wb") as out_f:
-                    shutil.copyfileobj(resp, out_f)
-                tmp_zip.replace(zip_path)
+                # Schritt 1: Von GitHub herunterladen (wenn force_download oder weder entpackt noch ZIP vorhanden)
+                need_download = force_download or (not self.is_extracted() and not zip_path.exists())
+                if need_download:
+                    if not repo:
+                        raise RuntimeError("Kein GitHub-Repository für dieses Tool hinterlegt.")
+                    zip_url = f"https://github.com/{repo}/archive/refs/heads/{branch}.zip"
+                    GLib.idle_add(lambda: self.start_btn.set_label("⬇️ Lade von GitHub..."))
+                    req = urllib.request.Request(zip_url, headers={"User-Agent": "CraftLauncher/1.0"})
+                    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_zip, "wb") as out_f:
+                        downloaded = 0
+                        while True:
+                            chunk = resp.read(256 * 1024)
+                            if not chunk:
+                                break
+                            out_f.write(chunk)
+                            downloaded += len(chunk)
+                            mb = downloaded / (1024 * 1024)
+                            GLib.idle_add(lambda m=mb: self.start_btn.set_label(f"⬇️ Lade ({m:.1f} MB)..."))
+                    tmp_zip.replace(zip_path)
 
-                GLib.idle_add(lambda: self.start_btn.set_label("📦 Entpacke..."))
-                self.workspace_dir.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(zip_path, "r") as zf:
-                    zf.extractall(self.workspace_dir)
+                # Schritt 2: Entpacken (wenn force_download oder noch nicht entpackt)
+                if force_download or not self.is_extracted():
+                    GLib.idle_add(lambda: self.start_btn.set_label("📦 Entpacke..."))
+                    self.workspace_dir.mkdir(parents=True, exist_ok=True)
+                    with zipfile.ZipFile(zip_path, "r") as zf:
+                        zf.extractall(self.workspace_dir)
 
-                # Speichere neue Commit-SHA falls bekannt
+                # Speichere Commit-SHA falls bekannt
                 remote_sha = self.tool.get("remote_sha")
                 if remote_sha:
                     versions = load_versions()
                     versions[self.tool.get("id")] = remote_sha
                     save_versions(versions)
 
-                # Kompiliere im Hintergrund falls Rust
-                pkg = self.tool.get("package_name")
-                if self.tool.get("type") == "rust" and pkg and shutil.which("cargo"):
-                    GLib.idle_add(lambda: self.start_btn.set_label("⚙️ Kompiliere..."))
-                    subprocess.run(
-                        ["cargo", "build", "--release", "-p", pkg],
-                        cwd=str(self.extracted_path),
-                        check=False
-                    )
+                # Schritt 3: Automatisch kompilieren / einrichten (wenn force_download oder noch nicht gebaut)
+                if force_download or not self.is_built():
+                    self._compile_or_setup_sync()
 
-                GLib.idle_add(self.on_update_complete, True, None)
+                GLib.idle_add(self.on_pipeline_complete, True, None, launch_after, in_terminal, on_done)
             except Exception as e:
                 if tmp_zip.exists():
-                    tmp_zip.unlink()
-                GLib.idle_add(self.on_update_complete, False, str(e))
+                    try:
+                        tmp_zip.unlink()
+                    except Exception:
+                        pass
+                GLib.idle_add(self.on_pipeline_complete, False, str(e), False, in_terminal, on_done)
 
-        threading.Thread(target=update_worker, daemon=True).start()
+        threading.Thread(target=pipeline_worker, daemon=True).start()
 
-    def on_update_complete(self, success, error_msg=None):
+    def on_pipeline_complete(self, success, error_msg=None, launch_after=False, in_terminal=False, on_done=None):
         self.start_btn.set_sensitive(True)
+        self.term_btn.set_sensitive(True)
         self.update_btn.set_sensitive(True)
-        self.start_btn.set_label("🚀 Starten")
         self.update_status_badge()
+
         if success:
             self.tool["update_available"] = False
             self.update_badge.hide()
             self.update_btn.hide()
-            self.app.show_info_toast(f"{self.tool.get('name')} wurde erfolgreich aktualisiert!")
+            self.app.show_info_toast(f"{self.tool.get('name')} ist startbereit!")
+            if launch_after:
+                self.launch_tool(in_terminal=in_terminal)
         else:
-            self.app.show_error(f"Update für {self.tool.get('name')} fehlgeschlagen:\n{error_msg}")
+            self.app.show_error(f"Einrichtung für {self.tool.get('name')} fehlgeschlagen:\n\n{error_msg}")
+
+        if on_done:
+            on_done(success)
 
     def ensure_extracted(self, callback_after):
         if self.is_extracted():
             callback_after(True)
             return
-
-        zip_file = BASE_DIR / self.tool.get("zip_name", "")
-        if not zip_file.exists():
-            if self.tool.get("repo"):
-                # Automatisch von GitHub herunterladen, falls ZIP lokal noch nicht liegt
-                self.perform_update()
-                callback_after(False)
-                return
-            self.app.show_error(f"Archivdatei nicht gefunden: {zip_file}")
-            callback_after(False)
-            return
-
-        # Disable button & show spinner
-        self.start_btn.set_sensitive(False)
-        self.start_btn.set_label("⏳ Entpacke...")
-
-        def extract_worker():
-            try:
-                self.workspace_dir.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(zip_file, 'r') as zf:
-                    zf.extractall(self.workspace_dir)
-                GLib.idle_add(lambda: self.on_extraction_complete(True, callback_after))
-            except Exception as e:
-                print(f"Fehler beim Entpacken: {e}", file=sys.stderr)
-                GLib.idle_add(lambda: self.on_extraction_complete(False, callback_after, error=str(e)))
-
-        threading.Thread(target=extract_worker, daemon=True).start()
-
-    def on_extraction_complete(self, success, callback_after, error=None):
-        self.start_btn.set_sensitive(True)
-        self.start_btn.set_label("🚀 Starten")
-        self.update_status_badge()
-        if not success:
-            self.app.show_error(f"Fehler beim Entpacken von {self.tool.get('name')}:\n{error}")
-            callback_after(False)
-        else:
-            callback_after(True)
+        self.perform_update(
+            launch_after=False,
+            force_download=not (BASE_DIR / self.tool.get("zip_name", "")).exists(),
+            on_done=lambda ok: callback_after(ok)
+        )
 
     def on_start_clicked(self, widget, in_terminal=False):
-        self.ensure_extracted(lambda success: self.launch_tool(in_terminal) if success else None)
+        if self.is_built():
+            self.launch_tool(in_terminal=in_terminal)
+        else:
+            # Vollautomatisch herunterladen (falls nötig), entpacken, kompilieren und danach starten!
+            self.perform_update(
+                launch_after=True,
+                in_terminal=in_terminal,
+                force_download=False
+            )
 
     def launch_tool(self, in_terminal=False):
         command = self.tool.get("command", "")
@@ -587,6 +663,17 @@ class ToolCard(Gtk.Box):
 
         tool_name = self.tool.get("name", "Tool")
         tool_type = self.tool.get("type", "custom")
+
+        # Falls das Tool ein fertig gebautes Rust-Desktop-Programm ist und nicht explizit
+        # der "📟 Terminal"-Button geklickt wurde, direkt ohne störendes Terminal-Fenster starten!
+        if not in_terminal and tool_type == "rust" and self.is_built():
+            bin_path = self.get_binary_path()
+            try:
+                subprocess.Popen([str(bin_path)], cwd=str(working_dir))
+                self.app.show_info_toast(f"'{tool_name}' gestartet.")
+                return
+            except Exception as e:
+                print(f"Direktstart fehlgeschlagen, nutze Terminal-Fallback: {e}", file=sys.stderr)
 
         # Create helper runner script that checks environment and runs command
         runner_script = working_dir / ".run_tool.sh"
@@ -608,20 +695,12 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 if [[ "{tool_type}" == "rust" ]]; then
     if ! command -v cargo &> /dev/null; then
         echo "⚠️  HINWEIS: Rust/Cargo ist noch nicht installiert!"
-        echo "   {tool_name} benötigt Rust, um kompiliert und gestartet zu werden."
-        echo ""
-        echo "   Möchtest du Rust jetzt installieren? (curl https://sh.rustup.rs)"
-        read -p "   Rust jetzt installieren? [j/N]: " answer
-        if [[ "$answer" =~ ^[jJyY]$ ]]; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            if [ -f "$HOME/.cargo/env" ]; then
-                source "$HOME/.cargo/env"
-            fi
-            export PATH="$HOME/.cargo/bin:$PATH"
-        else
-            echo "Abbruch. Bitte installiere Rust mit: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-            exec bash
+        echo "   Installiere Rust automatisch..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        if [ -f "$HOME/.cargo/env" ]; then
+            source "$HOME/.cargo/env"
         fi
+        export PATH="$HOME/.cargo/bin:$PATH"
     fi
 elif [[ "{tool_type}" == "node/python" ]]; then
     if ! command -v node &> /dev/null && ! command -v npm &> /dev/null; then
@@ -694,7 +773,7 @@ read -r
             flags=0,
             message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.YES_NO,
-            text=f"Möchtest du '{self.tool.get('name')}' wirklich neu entpacken?"
+            text=f"Möchtest du '{self.tool.get('name')}' wirklich neu entpacken & bauen?"
         )
         dialog.format_secondary_text("Bereits vorhandene Dateien im Arbeitsordner werden überschrieben.")
         response = dialog.run()
@@ -708,7 +787,10 @@ read -r
                     self.app.show_error(f"Fehler beim Löschen des Ordners: {e}")
                     return
             self.update_status_badge()
-            self.ensure_extracted(lambda success: self.app.show_info_toast(f"'{self.tool.get('name')}' erfolgreich neu entpackt.") if success else None)
+            self.perform_update(
+                launch_after=False,
+                force_download=not (BASE_DIR / self.tool.get("zip_name", "")).exists()
+            )
 
     def on_edit_command(self, widget):
         dialog = Gtk.Dialog(
@@ -743,8 +825,14 @@ read -r
 class CraftLauncherWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="Craft Launcher - Tool Schnellauswahl")
-        self.set_default_size(900, 680)
+        self.set_default_size(940, 700)
         self.set_position(Gtk.WindowPosition.CENTER)
+        launcher_icon = BASE_DIR / "craft-launcher.svg"
+        if launcher_icon.exists():
+            try:
+                self.set_icon_from_file(str(launcher_icon))
+            except Exception:
+                pass
 
         self.config = load_config()
         self.auto_discover_new_zips()
@@ -800,7 +888,7 @@ class CraftLauncherWindow(Gtk.Window):
         header = Gtk.HeaderBar()
         header.set_show_close_button(True)
         header.props.title = "🎨 Craft Launcher"
-        header.props.subtitle = "Schnellauswahl für Kreativ- & Office-Tools"
+        header.props.subtitle = "Schnellauswahl & Auto-Installer für Kreativ- & Office-Tools"
         self.set_titlebar(header)
 
         # Open Workspace button in header
@@ -821,12 +909,20 @@ class CraftLauncherWindow(Gtk.Window):
         self.btn_check_updates.connect("clicked", self.on_check_all_updates)
         header.pack_end(self.btn_check_updates)
 
+        # Prepare/Install all missing tools button
+        self.btn_prepare_all = Gtk.Button(label="⬇️ Alle bereitstellen")
+        self.btn_prepare_all.set_tooltip_text(
+            "Lädt, entpackt und kompiliert alle noch fehlenden Tools vollautomatisch im Hintergrund"
+        )
+        self.btn_prepare_all.connect("clicked", self.on_prepare_all_tools)
+        header.pack_end(self.btn_prepare_all)
+
         # Search Bar
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         search_box.get_style_context().add_class("category-bar")
 
         self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_placeholder_text("🔍 Suche nach Tool, Funktion oder Alternative (z. B. Photoshop, Excel, CAD, Video)...")
+        self.search_entry.set_placeholder_text("🔍 Suche nach Tool, Funktion oder Alternative (z. B. Photoshop, Lightroom, Figma, Excel, CAD)...")
         self.search_entry.set_hexpand(True)
         self.search_entry.get_style_context().add_class("search-box")
         self.search_entry.connect("search-changed", self.on_search_changed)
@@ -867,17 +963,20 @@ class CraftLauncherWindow(Gtk.Window):
         has_node = check_command_available("node")
         has_python = check_command_available("python3")
 
-        cargo_text = "Rust/Cargo: <span color='#a6e3a1'>✅ Bereit</span>" if has_cargo else "Rust/Cargo: <span color='#f38ba8'>⚠️ Nicht installiert</span>"
-        python_text = "Python: <span color='#a6e3a1'>✅ 3.12</span>" if has_python else "Python: ⚠️ Nicht gefunden"
+        cargo_text = "Rust/Cargo: <span color='#a6e3a1'>✅ Bereit</span>" if has_cargo else "Rust/Cargo: <span color='#f9e2af'>⏳ Wird bei Bedarf installiert</span>"
+        python_text = "Python: <span color='#a6e3a1'>✅ Bereit</span>" if has_python else "Python: ⚠️ Nicht gefunden"
         node_text = "Node.js: <span color='#a6e3a1'>✅ Bereit</span>" if has_node else "Node.js: ℹ️ Optional"
 
         info_lbl = Gtk.Label()
         info_lbl.set_use_markup(True)
-        info_lbl.set_markup(f"<b>System:</b>  {cargo_text}  │  {python_text}  │  {node_text}")
+        info_lbl.set_markup(
+            f"<b>System:</b>  {cargo_text}  │  {python_text}  │  {node_text}  │  "
+            f"<i>Klick auf ein Tool lädt &amp; baut es bei Bedarf vollautomatisch im Hintergrund</i>"
+        )
         self.banner_box.pack_start(info_lbl, False, False, 0)
 
         if not has_cargo:
-            install_btn = Gtk.Button(label="ℹ️ Rust Schnellinstallation")
+            install_btn = Gtk.Button(label="🛠️ System-Setup")
             install_btn.get_style_context().add_class("btn-secondary")
             install_btn.connect("clicked", self.show_rust_help)
             self.banner_box.pack_end(install_btn, False, False, 0)
@@ -902,13 +1001,12 @@ class CraftLauncherWindow(Gtk.Window):
             flags=0,
             message_type=Gtk.MessageType.INFO,
             buttons=Gtk.ButtonsType.OK,
-            text="Rust & Cargo Installation"
+            text="Automatische Einrichtung"
         )
         dialog.format_secondary_text(
-            "Die meisten Craft-Tools basieren auf modernem Rust.\n\n"
-            "Um sie direkt ausführen zu können, kannst du Rust mit folgendem Befehl im Terminal installieren:\n\n"
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n\n"
-            "Wenn du ein Tool startest, bietet der Launcher dir die Installation auch automatisch an."
+            "Der Craft Launcher lädt und kompiliert alle Tools vollautomatisch im Hintergrund.\n\n"
+            "Auf einem frischen Ubuntu/Debian-System kannst du einmalig './setup.sh' ausführen, "
+            "um alle benötigten System-Bibliotheken (Audio, GTK/WebKit, Clang, CMake, Rust) automatisch zu installieren."
         )
         dialog.run()
         dialog.destroy()
@@ -934,6 +1032,32 @@ class CraftLauncherWindow(Gtk.Window):
         self.auto_discover_new_zips()
         self.refresh_list()
         self.show_info_toast("Liste aktualisiert.")
+
+    def on_prepare_all_tools(self, widget):
+        cards = [c for c in self.cards_box.get_children() if isinstance(c, ToolCard) and not c.is_built()]
+        if not cards:
+            self.btn_prepare_all.set_label("✅ Alle startbereit!")
+            GLib.timeout_add_seconds(3, lambda: self.btn_prepare_all.set_label("⬇️ Alle bereitstellen") or False)
+            return
+
+        self.btn_prepare_all.set_sensitive(False)
+        total = len(cards)
+
+        def process_next(idx):
+            if idx >= total:
+                self.btn_prepare_all.set_sensitive(True)
+                self.btn_prepare_all.set_label("✅ Alle bereit!")
+                GLib.timeout_add_seconds(4, lambda: self.btn_prepare_all.set_label("⬇️ Alle bereitstellen") or False)
+                return
+            card = cards[idx]
+            self.btn_prepare_all.set_label(f"⚙️ Baue ({idx + 1}/{total}): {card.tool.get('name')}")
+            card.perform_update(
+                launch_after=False,
+                force_download=False,
+                on_done=lambda _ok: process_next(idx + 1)
+            )
+
+        process_next(0)
 
     def on_check_all_updates(self, widget):
         self.btn_check_updates.set_sensitive(False)

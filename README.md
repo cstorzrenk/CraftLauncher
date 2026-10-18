@@ -6,10 +6,10 @@ Ein moderner grafischer Desktop-Launcher (GTK3) zur Schnellauswahl, Verwaltung u
 
 ## ✨ Features
 
-* **Original-App-Icons:** Zeigt für jedes Tool das offizielle hochauflösende App-Logo (`icons/*.png`) statt generischer Platzhalter an.
+* **Vollautomatische 1-Klick-Bereitstellung (Zero-Config):** Niemand muss die einzelnen GitHub-Repositories manuell besuchen oder Code herunterladen! Beim ersten Klick auf **`⬇️ Installieren & Starten`** (oder über **`⬇️ Alle bereitstellen`** oben rechts) lädt der Launcher den Quellcode automatisch im Hintergrund von GitHub, entpackt ihn nach `workspace/`, kompiliert die schnelle Release-Version und startet das Programm sofort.
+* **Original-App-Icons:** Zeigt für jedes der 15 Tools das offizielle hochauflösende App-Logo (`icons/*.png`) an.
 * **Schnellsuche & Kategorie-Filter:** Sofortiges Filtern nach Tool-Name, Funktion oder bekannten Alternativen (*Photoshop*, *Lightroom*, *Illustrator*, *Figma*, *InDesign*, *Excel*, *Word*, *AutoCAD*, *SolidWorks*, *Premiere* u.v.m.).
-* **Automatisches Entpacken & Bauen:** Lädt oder entpackt die hinterlegten `.zip`-Archive automatisch in den isolierten Arbeitsordner `workspace/` und startet die kompilierte Release-Binärdatei ohne Verzögerung.
-* **Integrierte GitHub-Update-Funktion:** Prüft per Klick auf `🌐 Updates prüfen` gegen die GitHub-API, ob für die Tools neue Commits vorliegen, lädt bei Bedarf das aktuelle ZIP-Archiv herunter und kompiliert das Update im Hintergrund.
+* **Integrierte GitHub-Update-Funktion:** Prüft per Klick auf `🌐 Updates prüfen` gegen die GitHub-API, ob für die Tools neue Commits vorliegen, und aktualisiert sie bei Bedarf vollautomatisch im Hintergrund.
 * **Entwickler-Integration:** Direktes Öffnen einzelner Tools im Terminal (`📟`), in VS Code (`💻`) oder im Dateimanager (`📁`).
 
 ---
@@ -36,18 +36,11 @@ Ein moderner grafischer Desktop-Launcher (GTK3) zur Schnellauswahl, Verwaltung u
 
 ---
 
-## 🚀 Installation & Start
+## 🚀 Schnellstart (für neue Nutzer / Zweit-PC)
 
-### Voraussetzungen (Ubuntu / Debian)
-* Python 3 mit PyGObject (`python3-gi`, `gir1.2-gtk-3.0`)
-* Rust & Cargo (`rustup`) zum Kompilieren der Rust-basierten Tools
-* System-Bibliotheken für Audio/GUI-Builds:
-  ```bash
-  sudo apt update && sudo apt install -y libasound2-dev libglib2.0-dev libwebkit2gtk-4.1-dev libclang-dev git cmake
-  ```
-
-### Launcher starten
 ```bash
-./run_launcher.sh
+git clone https://github.com/cstorzrenk/CraftLauncher.git
+cd CraftLauncher
+./setup.sh          # Einmalig System-Pakete & Rust einrichten
+./run_launcher.sh   # Launcher starten – Tools laden & bauen sich automatisch per Klick!
 ```
-*(Oder direkt über das Anwendungsmenü, sofern `craft-launcher.desktop` unter `~/.local/share/applications/` hinterlegt ist.)*
