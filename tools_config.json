@@ -364,7 +364,7 @@
       "icon_path": "icons/deckcraft.png",
       "color": "#8b5cf6",
       "type": "node/python",
-      "command": "bash run_deckcraft.sh",
+      "command": "if [ -f ../../scripts/run_deckcraft.sh ]; then bash ../../scripts/run_deckcraft.sh; else bash run_deckcraft.sh; fi",
       "repo": "rioryugen/DeckCraft",
       "branch": "master",
       "package_name": "deckcraft"
