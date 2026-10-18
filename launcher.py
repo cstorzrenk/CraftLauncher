@@ -641,6 +641,18 @@ def sync_ai_to_deckcraft(ai_cfg: dict, workspace_dir: Path):
     except Exception as e:
         print(f"Konnte DeckCraft userConfig.json nicht synchronisieren: {e}", file=sys.stderr)
 
+    # Synchronisiere Fal.ai API-Key direkt nach ~/Artcraft/credentials/fal.api_key.txt für ArtCraft Native
+    fal_key = (ai_cfg.get("media_keys", {}).get("fal_api_key") or "").strip()
+    if fal_key:
+        try:
+            artcraft_creds_dir = Path.home() / "Artcraft" / "credentials"
+            artcraft_creds_dir.mkdir(parents=True, exist_ok=True)
+            fal_file = artcraft_creds_dir / "fal.api_key.txt"
+            fal_file.write_text(fal_key, encoding="utf-8")
+            os.chmod(fal_file, 0o600)
+        except Exception as e:
+            print(f"Konnte ArtCraft fal.api_key.txt nicht schreiben: {e}", file=sys.stderr)
+
 
 
 def clean_rust_target_cache(extracted_path: Path, bin_path: Path) -> int:
