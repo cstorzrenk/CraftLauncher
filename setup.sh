@@ -49,3 +49,4 @@ echo "  🚀 Starte den Launcher mit: ./run_launcher.sh"
 echo "     (Alle 15 Tools werden beim ersten Klick automatisch"
 echo "      im Hintergrund geladen, gebaut und gestartet!)"
 echo "=========================================================="
+
