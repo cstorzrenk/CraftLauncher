@@ -43,6 +43,33 @@ fi
 if [ -f "packages/web/lib/mixpanel.ts" ]; then
     sed -i "s|const MIXPANEL_TOKEN = 'd726e8bea8ec147f4c7720060cb2e6d1';|const MIXPANEL_TOKEN = process.env.NEXT_PUBLIC_MIXPANEL_TOKEN || '';|g" packages/web/lib/mixpanel.ts
 fi
+# 4. next.config.mjs: Proxy-Rewrites für /api/v1, /static und /app_data auf Port 8000 sicherstellen
+if [ -f "packages/web/next.config.mjs" ] && grep -q "localhost:5000" "packages/web/next.config.mjs"; then
+    python3 -c '
+p = "packages/web/next.config.mjs"
+txt = open(p).read()
+old = """  async rewrites() {
+    return [
+      {
+        source: \x27/app_data/fonts/:path*\x27,
+        destination: \x27http://localhost:5000/app_data/fonts/:path*\x27,
+      },
+    ];
+  },"""
+new = """  async rewrites() {
+    const fastapiUrl = process.env.FAST_API_INTERNAL_URL || "http://127.0.0.1:8000";
+    return [
+      { source: "/api/v1/:path*", destination: `${fastapiUrl}/api/v1/:path*` },
+      { source: "/static/:path*", destination: `${fastapiUrl}/static/:path*` },
+      { source: "/app_data/:path*", destination: `${fastapiUrl}/app_data/:path*` },
+      { source: "/docs", destination: `${fastapiUrl}/docs` },
+      { source: "/openapi.json", destination: `${fastapiUrl}/openapi.json` },
+    ];
+  },"""
+if old in txt:
+    open(p, "w").write(txt.replace(old, new))
+'
+fi
 
 echo "=========================================================="
 echo "  🎴 Starte DeckCraft (AI Presentation Generator)"
@@ -91,3 +118,4 @@ echo ""
 ( sleep 3 && xdg-open "http://localhost:3000" 2>/dev/null || true ) &
 
 npm run dev
+

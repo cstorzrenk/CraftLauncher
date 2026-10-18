@@ -844,6 +844,15 @@ class CraftLauncherWindow(Gtk.Window):
         self.build_ui()
         self.refresh_list()
 
+        # Prüfe kurz nach dem Start automatisch im Hintergrund, ob noch Tools heruntergeladen/gebaut werden müssen
+        GLib.timeout_add_seconds(1, self._auto_prepare_missing_on_startup)
+
+    def _auto_prepare_missing_on_startup(self):
+        missing = [c for c in self.cards_box.get_children() if isinstance(c, ToolCard) and not c.is_built()]
+        if missing:
+            self.on_prepare_all_tools(self.btn_prepare_all)
+        return False
+
     def setup_css(self):
         provider = Gtk.CssProvider()
         provider.load_from_data(CSS_DATA)
