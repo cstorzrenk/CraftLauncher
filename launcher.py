@@ -17,7 +17,8 @@ from pathlib import Path
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
-from gi.repository import Gtk, Gdk, GLib, Pango
+gi.require_version('GdkPixbuf', '2.0')
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "tools_config.json"
@@ -253,17 +254,28 @@ class ToolCard(Gtk.Box):
         self.workspace_dir = BASE_DIR / self.app.config.get("workspace_dir", "workspace")
         self.extracted_path = self.workspace_dir / self.tool.get("extracted_dir", self.tool.get("id"))
 
-        # Icon / Badge Box
+        # Icon / Badge Box (Original-Logo bevorzugt, Emoji als Fallback)
         icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         icon_box.set_valign(Gtk.Align.CENTER)
         icon_box.get_style_context().add_class("icon-badge")
-        
-        icon_label = Gtk.Label(label=self.tool.get("icon", "📦"))
-        icon_label.set_use_markup(True)
-        # Apply custom color if specified
-        color = self.tool.get("color", "#89b4fa")
-        icon_label.set_markup(f"<span font='28'>{self.tool.get('icon', '📦')}</span>")
-        icon_box.pack_start(icon_label, True, True, 0)
+
+        icon_widget = None
+        rel_icon = self.tool.get("icon_path") or f"icons/{self.tool.get('id', '')}.png"
+        icon_file = BASE_DIR / rel_icon
+        if icon_file.exists():
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icon_file), 48, 48, True)
+                icon_widget = Gtk.Image.new_from_pixbuf(pixbuf)
+            except Exception as e:
+                print(f"Konnte Icon {icon_file} nicht laden: {e}", file=sys.stderr)
+
+        if icon_widget is None:
+            icon_label = Gtk.Label(label=self.tool.get("icon", "📦"))
+            icon_label.set_use_markup(True)
+            icon_label.set_markup(f"<span font='28'>{self.tool.get('icon', '📦')}</span>")
+            icon_widget = icon_label
+
+        icon_box.pack_start(icon_widget, True, True, 0)
         self.pack_start(icon_box, False, False, 4)
 
         # Middle Content Box

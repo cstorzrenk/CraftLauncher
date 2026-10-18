@@ -17,12 +17,38 @@
         "paint"
       ],
       "icon": "🖼️",
+      "icon_path": "icons/photocraft.png",
       "color": "#38bdf8",
       "type": "rust",
       "command": "if [ -x target/release/photocraft ]; then ./target/release/photocraft \"$@\"; else cargo run --release -p photocraft -- \"$@\"; fi",
       "repo": "storytold/photocraft",
       "branch": "main",
       "package_name": "photocraft"
+    },
+    {
+      "id": "lightcraft",
+      "zip_name": "lightcraft-main.zip",
+      "extracted_dir": "lightcraft-main",
+      "name": "LightCraft",
+      "subtitle": "Adobe Lightroom Alternative",
+      "description": "Zerstörungsfreie RAW-Fotoentwicklung, Farbkorrektur, Fotokatalog und Batch-Bearbeitung in reinem Rust.",
+      "category": "Grafik & Bild",
+      "tags": [
+        "lightroom",
+        "foto",
+        "raw",
+        "farbkorrektur",
+        "katalog",
+        "fotografie"
+      ],
+      "icon": "📸",
+      "icon_path": "icons/lightcraft.png",
+      "color": "#0ea5e9",
+      "type": "rust",
+      "command": "if [ -x target/release/lightcraft ]; then ./target/release/lightcraft \"$@\"; else cargo run --release -p lightcraft -- \"$@\"; fi",
+      "repo": "storytold/lightcraft",
+      "branch": "main",
+      "package_name": "lightcraft"
     },
     {
       "id": "vectorcraft",
@@ -40,12 +66,38 @@
         "drawing"
       ],
       "icon": "📐",
+      "icon_path": "icons/vectorcraft.png",
       "color": "#fb923c",
       "type": "rust",
       "command": "if [ -x target/release/vectorcraft ]; then ./target/release/vectorcraft \"$@\"; else cargo run --release -p vectorcraft -- \"$@\"; fi",
       "repo": "storytold/vectorcraft",
       "branch": "main",
       "package_name": "vectorcraft"
+    },
+    {
+      "id": "figcraft",
+      "zip_name": "figcraft-main.zip",
+      "extracted_dir": "figcraft-main",
+      "name": "FigCraft",
+      "subtitle": "Figma Alternative (UI/UX & Prototyping)",
+      "description": "Interface-Design, Wireframing, Auto-Layout, Komponenten und interaktives Prototyping in reinem Rust.",
+      "category": "Grafik & Bild",
+      "tags": [
+        "figma",
+        "ui",
+        "ux",
+        "prototyping",
+        "webdesign",
+        "interface"
+      ],
+      "icon": "🎨",
+      "icon_path": "icons/figcraft.png",
+      "color": "#f43f5e",
+      "type": "rust",
+      "command": "if [ -x target/release/figcraft ]; then ./target/release/figcraft \"$@\"; else cargo run --release -p figcraft -- \"$@\"; fi",
+      "repo": "storytold/figcraft",
+      "branch": "main",
+      "package_name": "figcraft"
     },
     {
       "id": "designcraft",
@@ -63,6 +115,7 @@
         "print"
       ],
       "icon": "📑",
+      "icon_path": "icons/designcraft.png",
       "color": "#ec4899",
       "type": "rust",
       "command": "if [ -x target/release/designcraft ]; then ./target/release/designcraft \"$@\"; else cargo run --release -p designcraft -- \"$@\"; fi",
@@ -86,6 +139,7 @@
         "film"
       ],
       "icon": "🎬",
+      "icon_path": "icons/filmcraft.png",
       "color": "#a855f7",
       "type": "rust",
       "command": "if [ -x target/release/filmcraft ]; then ./target/release/filmcraft \"$@\"; else cargo run --release -p filmcraft -- \"$@\"; fi",
@@ -110,6 +164,7 @@
         "podcast"
       ],
       "icon": "🎵",
+      "icon_path": "icons/soundcraft.png",
       "color": "#10b981",
       "type": "rust",
       "command": "if [ -x target/release/soundcraft ]; then ./target/release/soundcraft \"$@\"; else cargo run --release -p soundcraft -- \"$@\"; fi",
@@ -133,6 +188,7 @@
         "compositing"
       ],
       "icon": "✨",
+      "icon_path": "icons/effectcraft.png",
       "color": "#818cf8",
       "type": "rust",
       "command": "if [ -x target/release/effectcraft ]; then ./target/release/effectcraft \"$@\"; else cargo run --release -p effectcraft -- \"$@\"; fi",
@@ -145,7 +201,7 @@
       "zip_name": "cadcraft-main.zip",
       "extracted_dir": "cadcraft-main",
       "name": "CadCraft",
-      "subtitle": "AutoCAD Alternative",
+      "subtitle": "AutoCAD Alternative (2D/3D CAD)",
       "description": "Technisches 2D- & 3D-CAD, parametrische Konstruktion, Layer-Verwaltung und DXF/DWG-Unterstützung.",
       "category": "3D & CAD",
       "tags": [
@@ -157,12 +213,40 @@
         "architektur"
       ],
       "icon": "🏗️",
+      "icon_path": "icons/cadcraft.png",
       "color": "#f59e0b",
       "type": "rust",
       "command": "if [ -x target/release/cadcraft ]; then ./target/release/cadcraft \"$@\"; else cargo run --release -p cadcraft -- \"$@\"; fi",
       "repo": "storytold/cadcraft",
       "branch": "main",
       "package_name": "cadcraft"
+    },
+    {
+      "id": "solidcraft",
+      "zip_name": "solidcraft-main.zip",
+      "extracted_dir": "solidcraft-main",
+      "name": "SolidCraft",
+      "subtitle": "SolidWorks / Fusion 360 Alternative",
+      "description": "Parametrisches 3D-CAD, Volumenmodellierung (B-Rep), Skizzen-Constraints, Baugruppen und STEP/STL-Export in reinem Rust.",
+      "category": "3D & CAD",
+      "tags": [
+        "solidworks",
+        "fusion360",
+        "3d",
+        "cad",
+        "parametrisch",
+        "step",
+        "stl",
+        "3d-druck"
+      ],
+      "icon": "🧊",
+      "icon_path": "icons/solidcraft.png",
+      "color": "#3b82f6",
+      "type": "rust",
+      "command": "if [ -x target/release/solidcraft ]; then ./target/release/solidcraft \"$@\"; else cargo run --release -p solidcraft -- \"$@\"; fi",
+      "repo": "tangency-labs/solidcraft",
+      "branch": "main",
+      "package_name": "solidcraft"
     },
     {
       "id": "artcraft",
@@ -181,6 +265,7 @@
         "generativ"
       ],
       "icon": "🖌️",
+      "icon_path": "icons/artcraft.png",
       "color": "#06b6d4",
       "type": "rust",
       "command": "if [ -x target/release/artcraft-native ]; then ./target/release/artcraft-native \"$@\"; else cargo run --release -p artcraft_native -- \"$@\"; fi",
@@ -204,6 +289,7 @@
         "reader"
       ],
       "icon": "📄",
+      "icon_path": "icons/pdfcraft.png",
       "color": "#ef4444",
       "type": "rust",
       "command": "if [ -x target/release/pdfcraft ]; then ./target/release/pdfcraft \"$@\"; else cargo run --release -p pdfcraft -- \"$@\"; fi",
@@ -227,6 +313,7 @@
         "kalkulation"
       ],
       "icon": "📊",
+      "icon_path": "icons/gridcraft.png",
       "color": "#22c55e",
       "type": "rust",
       "command": "if [ -x target/release/gridcraft ]; then ./target/release/gridcraft \"$@\"; else cargo run --release -p gridcraft -- \"$@\"; fi",
@@ -250,6 +337,7 @@
         "dokument"
       ],
       "icon": "📝",
+      "icon_path": "icons/wordcraft.png",
       "color": "#2563eb",
       "type": "rust",
       "command": "if [ -x target/release/wordcraft ]; then ./target/release/wordcraft \"$@\"; else cargo run --release -p wordcraft -- \"$@\"; fi",
@@ -273,6 +361,7 @@
         "slides"
       ],
       "icon": "🎴",
+      "icon_path": "icons/deckcraft.png",
       "color": "#8b5cf6",
       "type": "node/python",
       "command": "bash run_deckcraft.sh",
