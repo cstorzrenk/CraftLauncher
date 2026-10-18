@@ -33,6 +33,7 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, Pango
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "tools_config.json"
 VERSIONS_PATH = BASE_DIR / ".tool_versions.json"
+AI_CONFIG_PATH = BASE_DIR / ".ai_config.json"
 ICONS_DIR = BASE_DIR / "icons"
 DEFAULT_WORKSPACE_DIR = BASE_DIR / "workspace"
 
@@ -203,6 +204,16 @@ headerbar .subtitle {
     font-weight: bold;
 }
 
+.badge-ai {
+    background-color: rgba(203, 166, 247, 0.18);
+    color: #cba6f7;
+    border: 1px solid rgba(203, 166, 247, 0.4);
+    border-radius: 10px;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: bold;
+}
+
 .btn-primary {
     background-color: #89b4fa;
     color: #11111b;
@@ -307,6 +318,329 @@ def save_versions(ver):
             json.dump(ver, f, indent=2)
     except Exception as e:
         print(f"Fehler beim Speichern der Versionen: {e}", file=sys.stderr)
+
+
+DEFAULT_AI_CONFIG = {
+    "active_provider": "google",
+    "auto_update_models": True,
+    "last_checked": 0,
+    "providers": {
+        "google": {
+            "name": "Google Gemini",
+            "api_key": "",
+            "model": "gemini-2.5-pro",
+            "latest_model": "gemini-2.5-pro",
+            "available_models": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"]
+        },
+        "openai": {
+            "name": "OpenAI (ChatGPT / Codex)",
+            "api_key": "",
+            "model": "gpt-4.1",
+            "latest_model": "gpt-4.1",
+            "available_models": ["gpt-4.1", "gpt-4o", "o3", "o4-mini"]
+        },
+        "anthropic": {
+            "name": "Anthropic Claude",
+            "api_key": "",
+            "model": "claude-sonnet-4-20250514",
+            "latest_model": "claude-sonnet-4-20250514",
+            "available_models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-3-7-sonnet-latest"]
+        },
+        "xai": {
+            "name": "xAI Grok",
+            "api_key": "",
+            "model": "grok-3",
+            "latest_model": "grok-3",
+            "available_models": ["grok-3", "grok-3-mini"]
+        },
+        "ollama": {
+            "name": "Ollama (Lokal & Kostenlos)",
+            "url": "http://localhost:11434",
+            "model": "llama3.3",
+            "latest_model": "llama3.3",
+            "available_models": ["llama3.3", "qwen2.5-coder", "deepseek-r1", "gemma3"]
+        }
+    },
+    "media_keys": {
+        "pexels_api_key": "",
+        "pixabay_api_key": "",
+        "fal_api_key": ""
+    }
+}
+
+
+def load_ai_config() -> dict:
+    cfg = json.loads(json.dumps(DEFAULT_AI_CONFIG))
+    if AI_CONFIG_PATH.exists():
+        try:
+            with open(AI_CONFIG_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            cfg["active_provider"] = saved.get("active_provider", cfg["active_provider"])
+            cfg["auto_update_models"] = saved.get("auto_update_models", True)
+            cfg["last_checked"] = saved.get("last_checked", 0)
+            for pid, pdata in saved.get("providers", {}).items():
+                if pid in cfg["providers"] and isinstance(pdata, dict):
+                    cfg["providers"][pid].update(pdata)
+            if isinstance(saved.get("media_keys"), dict):
+                cfg["media_keys"].update(saved["media_keys"])
+        except Exception as e:
+            print(f"Fehler beim Laden von {AI_CONFIG_PATH}: {e}", file=sys.stderr)
+    return cfg
+
+
+def save_ai_config(cfg: dict):
+    try:
+        with open(AI_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        os.chmod(AI_CONFIG_PATH, 0o600)
+    except Exception as e:
+        print(f"Fehler beim Speichern von {AI_CONFIG_PATH}: {e}", file=sys.stderr)
+
+
+def fetch_provider_latest_models(provider_id: str, pdata: dict) -> tuple[str | None, list[str]]:
+    """
+    Fragt live die offizielle Modell-API des jeweiligen KI-Anbieters ab,
+    ermittelt alle verfügbaren Chat-/Generierungsmodelle und bestimmt automatisch
+    das aktuellste Flaggschiff-Modell (latest_model).
+    """
+    api_key = (pdata.get("api_key") or "").strip()
+    try:
+        if provider_id == "google":
+            if not api_key:
+                return None, []
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            req = urllib.request.Request(url, headers={"User-Agent": "CraftLauncher/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            models = []
+            for m in data.get("models", []):
+                methods = m.get("supportedGenerationMethods", [])
+                name = m.get("name", "").replace("models/", "")
+                if "generateContent" in methods and name.startswith("gemini-"):
+                    if any(skip in name for skip in ("embedding", "aqa", "vision", "tts", "image", "1.0")):
+                        continue
+                    models.append(name)
+            if not models:
+                return None, []
+
+            def gemini_rank(m_name: str):
+                ver_m = re.search(r"gemini-(\d+)\.(\d+)", m_name)
+                major = int(ver_m.group(1)) if ver_m else 1
+                minor = int(ver_m.group(2)) if ver_m else 0
+                is_stable = "exp" not in m_name and "preview" not in m_name
+                is_pro = "-pro" in m_name and "lite" not in m_name
+                is_flash = "-flash" in m_name and "lite" not in m_name
+                return (major, minor, is_stable, is_pro, is_flash, m_name)
+
+            models_sorted = sorted(set(models), key=gemini_rank, reverse=True)
+            return models_sorted[0], models_sorted[:20]
+
+        elif provider_id == "openai":
+            if not api_key:
+                return None, []
+            url = "https://api.openai.com/v1/models"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "CraftLauncher/1.0"
+            })
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            chat_models = []
+            for m in data.get("data", []):
+                mid = m.get("id", "")
+                if not re.match(r"^(gpt-[456]|o[134])", mid):
+                    continue
+                if any(skip in mid for skip in (
+                    "realtime", "audio", "transcribe", "tts", "instruct", "search", "image", "preview"
+                )):
+                    continue
+                chat_models.append((mid, int(m.get("created", 0))))
+            if not chat_models:
+                return None, []
+
+            def openai_rank(item):
+                mid, created = item
+                is_main = not any(x in mid for x in ("mini", "nano", "chat-latest"))
+                has_date = bool(re.search(r"-\d{4}-\d{2}-\d{2}$", mid))
+                ver_m = re.search(r"gpt-(\d+)(?:\.(\d+))?", mid)
+                maj = int(ver_m.group(1)) if ver_m else 4
+                min_v = int(ver_m.group(2)) if (ver_m and ver_m.group(2)) else 0
+                return (is_main, not has_date, maj, min_v, created)
+
+            sorted_items = sorted(chat_models, key=openai_rank, reverse=True)
+            model_names = []
+            for mid, _ in sorted_items:
+                if mid not in model_names:
+                    model_names.append(mid)
+            return model_names[0], model_names[:20]
+
+        elif provider_id == "anthropic":
+            if not api_key:
+                return None, []
+            url = "https://api.anthropic.com/v1/models"
+            req = urllib.request.Request(url, headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "User-Agent": "CraftLauncher/1.0"
+            })
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            # Anthropic liefert die neuesten Modelle zuerst zurück
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            if not models:
+                return None, []
+            # Bevorzuge Sonnet/Opus als Standard-Flaggschiff vor Haiku
+            flagships = [m for m in models if "sonnet" in m or "opus" in m]
+            latest = flagships[0] if flagships else models[0]
+            return latest, models[:20]
+
+        elif provider_id == "xai":
+            if not api_key:
+                return None, []
+            url = "https://api.x.ai/v1/models"
+            req = urllib.request.Request(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "CraftLauncher/1.0"
+            })
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            models = [
+                m.get("id") for m in data.get("data", [])
+                if m.get("id", "").startswith("grok-") and "image" not in m.get("id", "") and "vision" not in m.get("id", "")
+            ]
+            if not models:
+                return None, []
+            models_sorted = sorted(set(models), key=lambda x: ("mini" not in x, x), reverse=True)
+            return models_sorted[0], models_sorted[:20]
+
+        elif provider_id == "ollama":
+            base_url = (pdata.get("url") or "http://localhost:11434").rstrip("/")
+            url = f"{base_url}/api/tags"
+            req = urllib.request.Request(url, headers={"User-Agent": "CraftLauncher/1.0"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+            if not models:
+                return None, []
+            return models[0], models
+
+    except Exception:
+        return None, []
+
+    return None, []
+
+
+def build_ai_env_vars(ai_cfg: dict) -> dict[str, str]:
+    """
+    Erzeugt die Umgebungsvariablen für alle KI-fähigen Tools (DeckCraft, SolidCraft, ArtCraft).
+    """
+    env_From_ai = {}
+    providers = ai_cfg.get("providers", {})
+    active = ai_cfg.get("active_provider", "google")
+    env_From_ai["LLM"] = active
+
+    g_key = providers.get("google", {}).get("api_key", "").strip()
+    g_mod = providers.get("google", {}).get("model", "gemini-2.5-pro").strip()
+    if g_key:
+        env_From_ai["GOOGLE_API_KEY"] = g_key
+        env_From_ai["GEMINI_API_KEY"] = g_key
+    if g_mod:
+        env_From_ai["GOOGLE_MODEL"] = g_mod
+        env_From_ai["GEMINI_MODEL"] = g_mod
+
+    o_key = providers.get("openai", {}).get("api_key", "").strip()
+    o_mod = providers.get("openai", {}).get("model", "gpt-4.1").strip()
+    if o_key:
+        env_From_ai["OPENAI_API_KEY"] = o_key
+        env_From_ai["CODEX_API_KEY"] = o_key
+    if o_mod:
+        env_From_ai["OPENAI_MODEL"] = o_mod
+
+    a_key = providers.get("anthropic", {}).get("api_key", "").strip()
+    a_mod = providers.get("anthropic", {}).get("model", "claude-sonnet-4-20250514").strip()
+    if a_key:
+        env_From_ai["ANTHROPIC_API_KEY"] = a_key
+    if a_mod:
+        env_From_ai["ANTHROPIC_MODEL"] = a_mod
+
+    x_key = providers.get("xai", {}).get("api_key", "").strip()
+    x_mod = providers.get("xai", {}).get("model", "grok-3").strip()
+    if x_key:
+        env_From_ai["XAI_API_KEY"] = x_key
+    if x_mod:
+        env_From_ai["XAI_MODEL"] = x_mod
+
+    ol_url = providers.get("ollama", {}).get("url", "http://localhost:11434").strip()
+    ol_mod = providers.get("ollama", {}).get("model", "llama3.3").strip()
+    if ol_url:
+        env_From_ai["OLLAMA_URL"] = ol_url
+    if ol_mod:
+        env_From_ai["OLLAMA_MODEL"] = ol_mod
+
+    m_keys = ai_cfg.get("media_keys", {})
+    if m_keys.get("pexels_api_key", "").strip():
+        env_From_ai["PEXELS_API_KEY"] = m_keys["pexels_api_key"].strip()
+    if m_keys.get("pixabay_api_key", "").strip():
+        env_From_ai["PIXABAY_API_KEY"] = m_keys["pixabay_api_key"].strip()
+    if m_keys.get("fal_api_key", "").strip():
+        env_From_ai["FAL_KEY"] = m_keys["fal_api_key"].strip()
+
+    return env_From_ai
+
+
+def sync_ai_to_deckcraft(ai_cfg: dict, workspace_dir: Path):
+    """
+    Schreibt die zentralen KI-Keys und aktuellsten Modelle direkt in
+    workspace/DeckCraft-master/app_data/userConfig.json, damit DeckCraft
+    ohne manuelle Browser-Einrichtung sofort startklar ist.
+    """
+    deckcraft_dir = workspace_dir / "DeckCraft-master"
+    if not deckcraft_dir.exists():
+        return
+    app_data = deckcraft_dir / "app_data"
+    app_data.mkdir(parents=True, exist_ok=True)
+    cfg_file = app_data / "userConfig.json"
+
+    existing = {}
+    if cfg_file.exists():
+        try:
+            with open(cfg_file, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
+
+    env_map = build_ai_env_vars(ai_cfg)
+    # DeckCraft unterstützt als LLM: google, openai, anthropic, ollama, custom
+    llm_choice = ai_cfg.get("active_provider", "google")
+    if llm_choice == "xai":
+        existing["LLM"] = "custom"
+        existing["CUSTOM_LLM_URL"] = "https://api.x.ai/v1"
+        existing["CUSTOM_LLM_API_KEY"] = env_map.get("XAI_API_KEY", "")
+        existing["CUSTOM_MODEL"] = env_map.get("XAI_MODEL", "grok-3")
+    else:
+        existing["LLM"] = llm_choice
+
+    for k in [
+        "GOOGLE_API_KEY", "GOOGLE_MODEL",
+        "OPENAI_API_KEY", "OPENAI_MODEL",
+        "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+        "OLLAMA_URL", "OLLAMA_MODEL",
+        "PEXELS_API_KEY", "PIXABAY_API_KEY"
+    ]:
+        if env_map.get(k):
+            existing[k] = env_map[k]
+
+    if env_map.get("PEXELS_API_KEY") and not existing.get("IMAGE_PROVIDER"):
+        existing["IMAGE_PROVIDER"] = "pexels"
+    elif env_map.get("PIXABAY_API_KEY") and not existing.get("IMAGE_PROVIDER"):
+        existing["IMAGE_PROVIDER"] = "pixabay"
+
+    try:
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Konnte DeckCraft userConfig.json nicht synchronisieren: {e}", file=sys.stderr)
+
 
 
 def clean_rust_target_cache(extracted_path: Path, bin_path: Path) -> int:
@@ -418,6 +752,14 @@ class ToolCard(Gtk.Box):
 
         self.status_label = Gtk.Label()
 
+        # AI Badge (falls Tool KI-Anbindung unterstützt)
+        self.ai_badge = None
+        if self.tool.get("ai_capable"):
+            self.ai_badge = Gtk.Label(label="🤖 KI")
+            self.ai_badge.get_style_context().add_class("badge-ai")
+            ai_tip = self.tool.get("ai_info") or "Nutzt die zentrale KI-Anbindung des Launchers"
+            self.ai_badge.set_tooltip_text(ai_tip)
+
         # Live Running Badge (Option 6)
         self.running_badge = Gtk.Label(label="🟢 Aktiv")
         self.running_badge.get_style_context().add_class("badge-status-running")
@@ -477,6 +819,8 @@ class ToolCard(Gtk.Box):
 
             badge_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             badge_row.pack_start(self.status_label, False, False, 0)
+            if self.ai_badge:
+                badge_row.pack_start(self.ai_badge, False, False, 0)
             badge_row.pack_start(self.running_badge, False, False, 0)
             badge_row.pack_start(self.update_badge, False, False, 0)
             self.pack_start(badge_row, False, False, 0)
@@ -510,6 +854,8 @@ class ToolCard(Gtk.Box):
                 header_line.pack_start(sub_label, False, False, 0)
 
             header_line.pack_start(self.status_label, False, False, 0)
+            if self.ai_badge:
+                header_line.pack_start(self.ai_badge, False, False, 0)
             header_line.pack_start(self.running_badge, False, False, 0)
             header_line.pack_start(self.update_badge, False, False, 0)
             content_box.pack_start(header_line, False, False, 0)
@@ -912,16 +1258,28 @@ class ToolCard(Gtk.Box):
         tool_name = self.tool.get("name", "Tool")
         tool_type = self.tool.get("type", "custom")
 
+        # Zentrale KI-Konfiguration laden, an DeckCraft synchronisieren & als Env-Variablen übergeben
+        ai_cfg = load_ai_config()
+        sync_ai_to_deckcraft(ai_cfg, self.workspace_dir)
+        ai_env_vars = build_ai_env_vars(ai_cfg)
+        child_env = os.environ.copy()
+        child_env.update(ai_env_vars)
+
         if not in_terminal and tool_type == "rust" and self.is_built():
             bin_path = self.get_binary_path()
             try:
-                proc = subprocess.Popen([str(bin_path)], cwd=str(working_dir))
+                proc = subprocess.Popen([str(bin_path)], cwd=str(working_dir), env=child_env)
                 self.app.running_procs[tool_id] = proc
                 self.update_running_state()
                 self.app.show_info_toast(f"'{tool_name}' gestartet.")
                 return
             except Exception as e:
                 print(f"Direktstart fehlgeschlagen, nutze Terminal-Fallback: {e}", file=sys.stderr)
+
+        env_exports = "\n".join(
+            f'export {k}="{v.replace(chr(34), chr(92) + chr(34))}"'
+            for k, v in ai_env_vars.items()
+        )
 
         runner_script = working_dir / ".run_tool.sh"
         script_content = f"""#!/usr/bin/env bash
@@ -936,6 +1294,7 @@ if [ -f "$HOME/.cargo/env" ]; then
     source "$HOME/.cargo/env"
 fi
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+{env_exports}
 
 cd "{working_dir}" || exit 1
 {command}
@@ -955,7 +1314,7 @@ read -r
         try:
             with open(runner_script, "w", encoding="utf-8") as f:
                 f.write(script_content)
-            runner_script.chmod(0o755)
+            runner_script.chmod(0o700)
         except Exception as e:
             print(f"Fehler beim Erstellen des Runner-Skripts: {e}", file=sys.stderr)
 
@@ -967,9 +1326,9 @@ read -r
 
         try:
             if terminal_cmd:
-                proc = subprocess.Popen(terminal_cmd, cwd=str(working_dir))
+                proc = subprocess.Popen(terminal_cmd, cwd=str(working_dir), env=child_env)
             else:
-                proc = subprocess.Popen(["bash", str(runner_script)], cwd=str(working_dir))
+                proc = subprocess.Popen(["bash", str(runner_script)], cwd=str(working_dir), env=child_env)
             self.app.running_procs[tool_id] = proc
             GLib.timeout_add(500, lambda: self.update_running_state() or False)
         except Exception as e:
@@ -1059,6 +1418,7 @@ class CraftLauncherWindow(Gtk.Window):
                 pass
 
         self.config = load_config()
+        self.ai_config = load_ai_config()
         self.running_procs = {}
         self.active_cards = []
         self.view_mode = self.config.get("view_mode", "list")
@@ -1072,11 +1432,15 @@ class CraftLauncherWindow(Gtk.Window):
         self.build_ui()
         self.refresh_list()
         self.update_disk_usage_label()
+        self.update_ai_header_button()
 
         # Prüfe beim Start automatisch im Hintergrund, ob noch Tools gebaut werden müssen
         GLib.timeout_add_seconds(1, self._auto_prepare_missing_on_startup)
         # Option 6: Alle 2 Sekunden laufende Prozesse aktualisieren
         GLib.timeout_add_seconds(2, self._poll_running_processes)
+        # Zentrale KI: Beim Start (nach 3 Sek.) & danach regelmäßig alle 30 Min. auf neueste Modelle prüfen
+        GLib.timeout_add_seconds(3, lambda: self.check_ai_models_background(silent=True) or False)
+        GLib.timeout_add_seconds(1800, lambda: self.check_ai_models_background(silent=True) or True)
 
     def _auto_prepare_missing_on_startup(self):
         missing = [c for c in self.active_cards if not c.is_built()]
@@ -1135,7 +1499,7 @@ class CraftLauncherWindow(Gtk.Window):
         header.props.subtitle = "Schnellauswahl & Auto-Installer für Kreativ- & Office-Tools"
         self.set_titlebar(header)
 
-        # Left Header Buttons: View Mode Toggle (Option 4) & Add GitHub Tool (Option 5)
+        # Left Header Buttons: View Mode Toggle (Option 4), Add GitHub Tool (Option 5) & Central AI Settings
         self.btn_view_mode = Gtk.Button(
             label="⊞ Kacheln" if self.view_mode == "list" else "☰ Liste"
         )
@@ -1147,6 +1511,13 @@ class CraftLauncherWindow(Gtk.Window):
         btn_add_tool.set_tooltip_text("Neues Tool direkt per GitHub-Link hinzufügen & automatisch einrichten")
         btn_add_tool.connect("clicked", self.on_add_github_tool_dialog)
         header.pack_start(btn_add_tool)
+
+        self.btn_ai_settings = Gtk.Button(label="🔑 KI & Modelle")
+        self.btn_ai_settings.set_tooltip_text(
+            "Zentrale KI-API-Verknüpfung & automatischer Modell-Updater für DeckCraft, SolidCraft & ArtCraft"
+        )
+        self.btn_ai_settings.connect("clicked", self.on_ai_settings_dialog)
+        header.pack_start(self.btn_ai_settings)
 
         # Right Header Buttons
         btn_ws = Gtk.Button(label="📁")
@@ -1580,6 +1951,368 @@ class CraftLauncherWindow(Gtk.Window):
 
         self.cards_box.show_all()
 
+    # --- Zentrale KI-Konfiguration & Automatischer Modell-Updater ---
+    def update_ai_header_button(self):
+        self.ai_config = load_ai_config()
+        active_id = self.ai_config.get("active_provider", "google")
+        providers = self.ai_config.get("providers", {})
+        active_p = providers.get(active_id, {})
+        cur_mod = active_p.get("model", "")
+        lat_mod = active_p.get("latest_model", "")
+
+        has_newer = any(
+            (p.get("api_key") or pid == "ollama")
+            and p.get("latest_model")
+            and p.get("model") != p.get("latest_model")
+            for pid, p in providers.items()
+        )
+        has_any_key = any(bool(p.get("api_key")) for p in providers.values()) or active_id == "ollama"
+
+        if has_newer and not self.ai_config.get("auto_update_models", True):
+            self.btn_ai_settings.set_label("🔑 KI (⬆️ Neues Modell)")
+        elif has_any_key and cur_mod:
+            self.btn_ai_settings.set_label(f"🔑 KI: {cur_mod}")
+        else:
+            self.btn_ai_settings.set_label("🔑 KI & Modelle")
+
+    def check_ai_models_background(self, silent=True, on_done=None):
+        """
+        Prüft für alle konfigurierten KI-Anbieter (mit hinterlegtem API-Key bzw. lokales Ollama)
+        live gegen die offizielle Anbieter-API, welches das aktuellste Flaggschiff-Modell ist.
+        Wenn 'auto_update_models' aktiv ist, wird automatisch auf das neueste Modell umgestellt.
+        """
+        def worker():
+            cfg = load_ai_config()
+            providers = cfg.get("providers", {})
+            auto_upd = cfg.get("auto_update_models", True)
+            upgraded = []
+            available_upgrades = []
+
+            for pid, pdata in providers.items():
+                has_cred = bool((pdata.get("api_key") or "").strip()) if pid != "ollama" else True
+                if not has_cred:
+                    continue
+                latest, all_models = fetch_provider_latest_models(pid, pdata)
+                if latest:
+                    pdata["latest_model"] = latest
+                if all_models:
+                    pdata["available_models"] = all_models
+
+                cur = pdata.get("model", "")
+                if latest and cur != latest:
+                    if auto_upd:
+                        pdata["model"] = latest
+                        upgraded.append(f"{pdata.get('name', pid)} → {latest}")
+                    else:
+                        available_upgrades.append(f"{pdata.get('name', pid)}: {cur} → {latest}")
+
+            cfg["last_checked"] = int(time.time())
+            save_ai_config(cfg)
+            ws = BASE_DIR / self.config.get("workspace_dir", "workspace")
+            sync_ai_to_deckcraft(cfg, ws)
+
+            def finish():
+                self.ai_config = cfg
+                self.update_ai_header_button()
+                if upgraded:
+                    msg = "KI-Modelle automatisch aktualisiert: " + ", ".join(upgraded)
+                    self.show_info_toast(msg)
+                if on_done:
+                    on_done(upgraded, available_upgrades)
+
+            GLib.idle_add(finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_ai_settings_dialog(self, _widget):
+        cfg = load_ai_config()
+        dialog = Gtk.Dialog(
+            title="🔑 Zentrale KI-Anbindung & Automatischer Modell-Updater",
+            transient_for=self,
+            flags=0
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "💾 Speichern & Synchronisieren", Gtk.ResponseType.OK
+        )
+        dialog.set_default_size(680, 620)
+
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(14)
+
+        intro = Gtk.Label()
+        intro.set_use_markup(True)
+        intro.set_markup(
+            "<b>Einmal zentral hinterlegen – in allen KI-fähigen Tools sofort nutzbar</b>\n"
+            "<span size='small' color='#a6adc8'>"
+            "• Übergibt API-Keys &amp; Modellnamen automatisch an <b>DeckCraft</b>, <b>SolidCraft</b> (AI-Chat) und <b>ArtCraft</b>.\n"
+            "• Speichert Keys geschützt (Berechtigung <tt>0600</tt>) lokal in <tt>.ai_config.json</tt> (durch <tt>.gitignore</tt> vor GitHub geschützt)."
+            "</span>"
+        )
+        intro.set_line_wrap(True)
+        intro.set_xalign(0)
+        box.pack_start(intro, False, False, 0)
+
+        # Top Controls: Standard-Anbieter + Auto-Update-Checkbox + Live-Check-Button
+        top_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        top_frame.get_style_context().add_class("tool-card")
+
+        prov_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        prov_lbl = Gtk.Label()
+        prov_lbl.set_markup("<b>Standard-KI-Anbieter (für DeckCraft &amp; Standard-Chat):</b>")
+        prov_combo = Gtk.ComboBoxText()
+        provider_order = ["google", "openai", "anthropic", "xai", "ollama"]
+        for pid in provider_order:
+            p_name = cfg["providers"][pid]["name"]
+            prov_combo.append(pid, p_name)
+        prov_combo.set_active_id(cfg.get("active_provider", "google"))
+        prov_row.pack_start(prov_lbl, False, False, 0)
+        prov_row.pack_start(prov_combo, True, True, 0)
+        top_frame.pack_start(prov_row, False, False, 0)
+
+        auto_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        auto_chk = Gtk.CheckButton(
+            label="⚡ Immer automatisch auf das aktuellste Flaggschiff-Modell aktualisieren (Prüfung beim Start & alle 30 Min.)"
+        )
+        auto_chk.set_active(cfg.get("auto_update_models", True))
+        auto_row.pack_start(auto_chk, True, True, 0)
+
+        btn_check_now = Gtk.Button(label="🔄 Jetzt aktuellste Modelle prüfen")
+        btn_check_now.get_style_context().add_class("btn-update")
+        auto_row.pack_end(btn_check_now, False, False, 0)
+        top_frame.pack_start(auto_row, False, False, 0)
+
+        status_check_lbl = Gtk.Label()
+        status_check_lbl.set_use_markup(True)
+        status_check_lbl.set_xalign(0)
+        last_ts = cfg.get("last_checked", 0)
+        if last_ts > 0:
+            t_str = time.strftime("%d.%m.%Y %H:%M:%S", time.localtime(last_ts))
+            status_check_lbl.set_markup(f"<span size='small' color='#a6adc8'>Zuletzt auf Modell-Updates geprüft: {t_str}</span>")
+        else:
+            status_check_lbl.set_markup("<span size='small' color='#a6adc8'>Trage unten einen API-Key ein und klicke auf „Jetzt aktuellste Modelle prüfen“.</span>")
+        top_frame.pack_start(status_check_lbl, False, False, 0)
+
+        box.pack_start(top_frame, False, False, 0)
+
+        # Scrolled area for all providers
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        prov_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        scroll.add(prov_list_box)
+        box.pack_start(scroll, True, True, 0)
+
+        widgets_map = {}
+
+        for pid in provider_order:
+            pdata = cfg["providers"][pid]
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            card.get_style_context().add_class("tool-card")
+
+            hdr = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title = Gtk.Label()
+            title.set_markup(f"<b>{GLib.markup_escape_text(pdata['name'])}</b>")
+            title.set_xalign(0)
+            hdr.pack_start(title, False, False, 0)
+
+            badge_lbl = Gtk.Label()
+            badge_lbl.set_use_markup(True)
+            cur_m = pdata.get("model", "")
+            lat_m = pdata.get("latest_model", cur_m)
+            if cur_m == lat_m:
+                badge_lbl.set_markup(f"<span size='small' color='#a6e3a1'>✅ Aktuellstes Modell ({GLib.markup_escape_text(cur_m)})</span>")
+            else:
+                badge_lbl.set_markup(f"<span size='small' color='#fab387'>⬆️ Neu verfügbar: <b>{GLib.markup_escape_text(lat_m)}</b></span>")
+            hdr.pack_end(badge_lbl, False, False, 0)
+            card.pack_start(hdr, False, False, 0)
+
+            # Key / URL Row
+            key_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            if pid == "ollama":
+                k_lbl = Gtk.Label(label="Server-URL:")
+                k_entry = Gtk.Entry()
+                k_entry.set_text(pdata.get("url", "http://localhost:11434"))
+                k_entry.set_placeholder_text("http://localhost:11434")
+                key_row.pack_start(k_lbl, False, False, 0)
+                key_row.pack_start(k_entry, True, True, 0)
+            else:
+                k_lbl = Gtk.Label(label="API-Key:")
+                k_entry = Gtk.Entry()
+                k_entry.set_visibility(False)
+                k_entry.set_text(pdata.get("api_key", ""))
+                k_entry.set_placeholder_text(f"API-Key für {pdata['name']} eingeben...")
+                toggle_vis = Gtk.ToggleButton(label="👁️")
+                toggle_vis.set_tooltip_text("API-Key ein-/ausblenden")
+                toggle_vis.connect("toggled", lambda btn, ent=k_entry: ent.set_visibility(btn.get_active()))
+                key_row.pack_start(k_lbl, False, False, 0)
+                key_row.pack_start(k_entry, True, True, 0)
+                key_row.pack_start(toggle_vis, False, False, 0)
+            card.pack_start(key_row, False, False, 0)
+
+            # Model ComboBoxEntry + "Use Latest" Button
+            mod_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            m_lbl = Gtk.Label(label="Aktives Modell:")
+            m_combo = Gtk.ComboBoxText.new_with_entry()
+            avail = list(pdata.get("available_models", []))
+            if cur_m and cur_m not in avail:
+                avail.insert(0, cur_m)
+            for m_item in avail:
+                m_combo.append_text(m_item)
+            m_combo.get_child().set_text(cur_m)
+
+            btn_use_latest = Gtk.Button(label=f"⚡ Auf {lat_m} setzen")
+            btn_use_latest.get_style_context().add_class("btn-secondary")
+            btn_use_latest.set_tooltip_text("Übernimmt sofort das neueste erkannte Modell dieses Anbieters")
+
+            def on_use_latest(_b, combo=m_combo, p=pdata, b_lbl=badge_lbl):
+                target_m = p.get("latest_model", "")
+                if target_m:
+                    combo.get_child().set_text(target_m)
+                    b_lbl.set_markup(f"<span size='small' color='#a6e3a1'>✅ Aktuellstes Modell ({GLib.markup_escape_text(target_m)})</span>")
+
+            btn_use_latest.connect("clicked", on_use_latest)
+
+            mod_row.pack_start(m_lbl, False, False, 0)
+            mod_row.pack_start(m_combo, True, True, 0)
+            mod_row.pack_start(btn_use_latest, False, False, 0)
+            card.pack_start(mod_row, False, False, 0)
+
+            prov_list_box.pack_start(card, False, False, 0)
+            widgets_map[pid] = {
+                "key_entry": k_entry,
+                "model_combo": m_combo,
+                "badge_lbl": badge_lbl,
+                "btn_latest": btn_use_latest,
+                "pdata": pdata
+            }
+
+        # Stock-Media Keys (Pexels / Pixabay / Fal.ai) für DeckCraft & ArtCraft
+        media_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        media_card.get_style_context().add_class("tool-card")
+        m_hdr = Gtk.Label()
+        m_hdr.set_markup("<b>📸 Zusatz-APIs für Bilder &amp; Medien (Optional für DeckCraft &amp; ArtCraft)</b>")
+        m_hdr.set_xalign(0)
+        media_card.pack_start(m_hdr, False, False, 0)
+
+        pexels_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        pexels_row.pack_start(Gtk.Label(label="Pexels API-Key (DeckCraft Fotos):"), False, False, 0)
+        pexels_entry = Gtk.Entry()
+        pexels_entry.set_visibility(False)
+        pexels_entry.set_text(cfg.get("media_keys", {}).get("pexels_api_key", ""))
+        pexels_row.pack_start(pexels_entry, True, True, 0)
+        media_card.pack_start(pexels_row, False, False, 0)
+
+        fal_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        fal_row.pack_start(Gtk.Label(label="Fal.ai API-Key (ArtCraft Generierung):"), False, False, 0)
+        fal_entry = Gtk.Entry()
+        fal_entry.set_visibility(False)
+        fal_entry.set_text(cfg.get("media_keys", {}).get("fal_api_key", ""))
+        fal_row.pack_start(fal_entry, True, True, 0)
+        media_card.pack_start(fal_row, False, False, 0)
+
+        prov_list_box.pack_start(media_card, False, False, 0)
+
+        # Live Check Handler inside Dialog
+        def on_live_check_clicked(_btn):
+            btn_check_now.set_sensitive(False)
+            btn_check_now.set_label("⏳ Prüfe Anbieter-APIs...")
+            status_check_lbl.set_markup("<span size='small' color='#f9e2af'>Frage live verfügbare Modelle bei den konfigurierten Anbietern ab...</span>")
+
+            # Übernehme aktuelle Eingaben aus den Textfeldern vor der Abfrage
+            for pid, w in widgets_map.items():
+                val = w["key_entry"].get_text().strip()
+                if pid == "ollama":
+                    w["pdata"]["url"] = val or "http://localhost:11434"
+                else:
+                    w["pdata"]["api_key"] = val
+                w["pdata"]["model"] = w["model_combo"].get_child().get_text().strip()
+
+            def check_worker():
+                found_count = 0
+                upgraded_count = 0
+                is_auto = auto_chk.get_active()
+                for pid, w in widgets_map.items():
+                    p = w["pdata"]
+                    has_cred = bool(p.get("api_key")) if pid != "ollama" else True
+                    if not has_cred:
+                        continue
+                    latest, all_mods = fetch_provider_latest_models(pid, p)
+                    if latest:
+                        found_count += 1
+                        p["latest_model"] = latest
+                        if all_mods:
+                            p["available_models"] = all_mods
+                        if is_auto and p.get("model") != latest:
+                            p["model"] = latest
+                            upgraded_count += 1
+
+                def update_dialog_ui():
+                    btn_check_now.set_sensitive(True)
+                    btn_check_now.set_label("🔄 Jetzt aktuellste Modelle prüfen")
+                    for pid, w in widgets_map.items():
+                        p = w["pdata"]
+                        cur_m = p.get("model", "")
+                        lat_m = p.get("latest_model", cur_m)
+                        combo = w["model_combo"]
+                        combo.remove_all()
+                        for m_item in p.get("available_models", []):
+                            combo.append_text(m_item)
+                        combo.get_child().set_text(cur_m)
+                        w["btn_latest"].set_label(f"⚡ Auf {lat_m} setzen")
+                        if cur_m == lat_m:
+                            w["badge_lbl"].set_markup(
+                                f"<span size='small' color='#a6e3a1'>✅ Aktuellstes Modell ({GLib.markup_escape_text(cur_m)})</span>"
+                            )
+                        else:
+                            w["badge_lbl"].set_markup(
+                                f"<span size='small' color='#fab387'>⬆️ Neu verfügbar: <b>{GLib.markup_escape_text(lat_m)}</b></span>"
+                            )
+                    now_str = time.strftime("%H:%M:%S")
+                    if found_count == 0:
+                        status_check_lbl.set_markup(
+                            "<span size='small' color='#f9e2af'>⚠️ Keine erreichbaren APIs (bitte gültigen API-Key eintragen oder Ollama starten).</span>"
+                        )
+                    elif upgraded_count > 0:
+                        status_check_lbl.set_markup(
+                            f"<span size='small' color='#a6e3a1'>✅ Geprüft ({now_str}): {upgraded_count} Anbieter automatisch auf das neueste Modell aktualisiert!</span>"
+                        )
+                    else:
+                        status_check_lbl.set_markup(
+                            f"<span size='small' color='#a6e3a1'>✅ Geprüft ({now_str}): Alle {found_count} erreichbaren Anbieter sind auf dem neuesten Stand!</span>"
+                        )
+
+                GLib.idle_add(update_dialog_ui)
+
+            threading.Thread(target=check_worker, daemon=True).start()
+
+        btn_check_now.connect("clicked", on_live_check_clicked)
+
+        dialog.show_all()
+        resp = dialog.run()
+        if resp == Gtk.ResponseType.OK:
+            cfg["active_provider"] = prov_combo.get_active_id() or "google"
+            cfg["auto_update_models"] = auto_chk.get_active()
+            for pid, w in widgets_map.items():
+                val = w["key_entry"].get_text().strip()
+                if pid == "ollama":
+                    cfg["providers"][pid]["url"] = val or "http://localhost:11434"
+                else:
+                    cfg["providers"][pid]["api_key"] = val
+                cfg["providers"][pid]["model"] = w["model_combo"].get_child().get_text().strip()
+            cfg["media_keys"]["pexels_api_key"] = pexels_entry.get_text().strip()
+            cfg["media_keys"]["fal_api_key"] = fal_entry.get_text().strip()
+
+            save_ai_config(cfg)
+            ws = BASE_DIR / self.config.get("workspace_dir", "workspace")
+            sync_ai_to_deckcraft(cfg, ws)
+            self.update_ai_header_button()
+            # Prüfe nach dem Speichern direkt im Hintergrund, ob mit neu eingegebenen Keys ein neueres Modell existiert
+            self.check_ai_models_background(silent=False)
+
+        dialog.destroy()
+
     def show_error(self, message):
         dialog = Gtk.MessageDialog(
             transient_for=self,
@@ -1605,3 +2338,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

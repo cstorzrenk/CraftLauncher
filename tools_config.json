@@ -145,7 +145,9 @@
       "command": "if [ -x target/release/filmcraft ]; then ./target/release/filmcraft \"$@\"; else cargo run --release -p filmcraft -- \"$@\"; fi",
       "repo": "storytold/filmcraft",
       "branch": "main",
-      "package_name": "filmcraft"
+      "package_name": "filmcraft",
+      "ai_capable": true,
+      "ai_info": "Lokale KI-Spracherkennung (Whisper) für automatische Untertitel"
     },
     {
       "id": "soundcraft",
@@ -237,7 +239,9 @@
         "parametrisch",
         "step",
         "stl",
-        "3d-druck"
+        "3d-druck",
+        "ki",
+        "ai"
       ],
       "icon": "🧊",
       "icon_path": "icons/solidcraft.png",
@@ -246,7 +250,9 @@
       "command": "if [ -x target/release/solidcraft ]; then ./target/release/solidcraft \"$@\"; else cargo run --release -p solidcraft -- \"$@\"; fi",
       "repo": "tangency-labs/solidcraft",
       "branch": "main",
-      "package_name": "solidcraft"
+      "package_name": "solidcraft",
+      "ai_capable": true,
+      "ai_info": "Integrierter KI-Agenten-Chat (Strg+Shift+A) für Gemini, OpenAI, Claude, Grok & Ollama"
     },
     {
       "id": "artcraft",
@@ -271,7 +277,9 @@
       "command": "if [ -x target/release/artcraft-native ]; then ./target/release/artcraft-native \"$@\"; else cargo run --release -p artcraft_native -- \"$@\"; fi",
       "repo": "storytold/artcraft",
       "branch": "main",
-      "package_name": "artcraft_native"
+      "package_name": "artcraft_native",
+      "ai_capable": true,
+      "ai_info": "Generative KI-Schnittstellen (OpenAI Sora, Grok, Fal.ai, GMI Cloud)"
     },
     {
       "id": "pdfcraft",
@@ -367,7 +375,9 @@
       "command": "if [ -f ../../scripts/run_deckcraft.sh ]; then bash ../../scripts/run_deckcraft.sh; else bash run_deckcraft.sh; fi",
       "repo": "rioryugen/DeckCraft",
       "branch": "master",
-      "package_name": "deckcraft"
+      "package_name": "deckcraft",
+      "ai_capable": true,
+      "ai_info": "Nutzt zentrales KI-Modell (Gemini, OpenAI, Claude, Ollama) & Pexels/Pixabay automatisch"
     }
   ]
 }

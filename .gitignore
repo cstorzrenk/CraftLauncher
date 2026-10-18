@@ -5,9 +5,11 @@ workspace/
 *.zip
 .tmp_*.zip
 
-# Lokaler Versions-Cache & Python-Cache
+# Lokaler Versions-Cache, KI-API-Keys (NIEMALS committen!) & Python-Cache
 .tool_versions.json
+.ai_config.json
 __pycache__/
 *.py[cod]
 *$py.class
+
 
